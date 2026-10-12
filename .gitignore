@@ -1,0 +1,37 @@
+# Python
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Large data / model artifacts — NOT committed; hosted on Render persistent disk
+# or reproduced locally by running rag_pipeline.py
+judgments/
+data/
+index_store/
+index_store_backup_*/
+# Small deploy index that Render loads (see INDEX_DIR in render.yaml). Commit it:
+!index_store_backup_20261005_152032/
+scratch/
+
+# Evaluation results / logs
+*.json
+# ...but the frontend needs its manifest/config to build on Vercel:
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/vercel.json
+feedback.db
+
+# Frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

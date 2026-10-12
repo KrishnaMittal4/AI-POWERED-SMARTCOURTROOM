@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: legal-rag-api
+    runtime: python
+    region: singapore          # choose closest region to your users
+    plan: free
+
+    buildCommand: pip install -r requirements.txt
+
+    # Render's free tier shuts down after 15 min idle; on cold start the
+    # FAISS index is loaded from the persistent disk mounted at /data.
+    startCommand: gunicorn main:app -k uvicorn.workers.UvicornWorker --workers 1 --timeout 120 --bind 0.0.0.0:$PORT
+
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false            # set manually in Render dashboard, never committed
+      - key: INDEX_DIR
+        # The full index_store/ is git-ignored (52k chunks, too big for the free tier's 512 MB RAM).
+        # Deploy the small committed index instead. For the full index use a paid plan + a
+        # persistent disk and set this to /data/index_store.
+        value: index_store_backup_20261005_152032
+      - key: PYTHON_VERSION
+        value: "3.10.14"       # Render ignores runtime.txt; this env var pins the Python version
+      - key: JUDGMENTS_DIR
+        value: judgments
+      - key: ADMIN_API_KEY
+        sync: false            # protects upload/delete/feedback listing; set in the Render dashboard
+      - key: MIN_RETRIEVAL_SCORE
+        value: "0.54"
+      - key: TRUST_PROXY_HOPS
+        value: "1"             # Render puts one proxy in front of the app
+      - key: RATE_LIMIT_PER_MIN
+        value: "6"
+      - key: RATE_LIMIT_PER_DAY
+        value: "100"
+      - key: RATE_LIMIT_GLOBAL_PER_MIN
+        value: "12"            # keep below your Groq plan's requests/minute
+      # Set CORS_ORIGINS to your exact Vercel domain. When it is set, ONLY that
+      # origin is allowed (the *.vercel.app wildcard is switched off).
+      # - key: CORS_ORIGINS
+      #   value: https://your-app.vercel.app
+
+    # If you upload a small index to the repo (index_store_backup):
+    # Set INDEX_DIR=index_store_backup_20261005_152032 and it'll be used directly.
+    # That backup has 7,362 chunks and fits well within 512 MB RAM.
+
+    healthCheckPath: /health
