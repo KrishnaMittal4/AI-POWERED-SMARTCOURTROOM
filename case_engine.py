@@ -35,8 +35,8 @@ def get_intelligence(user_id,case_id):
 
 
 def _compact_context(user_id,case_id,embed,reranker,max_chars=12000):
-    from private_case_rag import get_case_index,_paths
-    from rag_pipeline import search
+    from private_case_rag import get_case_index,_paths,_ensure_embed_model
+    embed=_ensure_embed_model(embed)
     idx,recs=get_case_index(user_id,case_id,embed); base,_=_paths(user_id,case_id)
     queries=[
       'material facts parties incident dates chronology procedural history',
@@ -62,6 +62,9 @@ def _compact_context(user_id,case_id,embed,reranker,max_chars=12000):
 
 def _parse(raw):
     raw=(raw or '').strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw).strip()
     try:return json.loads(raw)
     except Exception:pass
     m=re.search(r'\{.*\}',raw,re.S)
@@ -72,6 +75,8 @@ def _parse(raw):
 
 
 def analyze_once(user_id,case_id,client,embed,reranker):
+    from private_case_rag import _ensure_embed_model
+    embed=_ensure_embed_model(embed)
     assert_case(user_id,case_id)
     if not list_documents(user_id,case_id):raise HTTPException(400,'Upload at least one private case PDF first.')
     context=_compact_context(user_id,case_id,embed,reranker,int(os.getenv('CASE_INTELLIGENCE_MAX_CHARS','12000')))

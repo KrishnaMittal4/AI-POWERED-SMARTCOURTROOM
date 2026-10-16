@@ -93,6 +93,8 @@ def _classify_authorities(issue, candidates, client):
 
 
 def build_issue_map(user_id,case_id,client,embed,reranker,index,records):
+    from private_case_rag import _ensure_embed_model
+    embed=_ensure_embed_model(embed)
     assert_case(user_id,case_id)
     c=get_intelligence(user_id,case_id)
     if c.get('status')!='ready' or not c.get('intelligence'):

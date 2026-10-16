@@ -25,10 +25,10 @@ TASK_TOKEN_BUDGETS = {
     "citizen": int(os.getenv("TOKENS_CITIZEN", "750")),
     "moot": int(os.getenv("TOKENS_MOOT", "700")),
     "moot_short": int(os.getenv("TOKENS_MOOT_SHORT", "500")),
-    "case_intelligence": int(os.getenv("TOKENS_CASE_INTELLIGENCE", "950")),
-    "issue_map": int(os.getenv("TOKENS_ISSUE_MAP", "700")),
+    "case_intelligence": int(os.getenv("TOKENS_CASE_INTELLIGENCE", "2200")),
+    "issue_map": int(os.getenv("TOKENS_ISSUE_MAP", "1400")),
     "verification": int(os.getenv("TOKENS_VERIFICATION", "500")),
-    "general": int(os.getenv("TOKENS_GENERAL", "900")),
+    "general": int(os.getenv("TOKENS_GENERAL", "1200")),
 }
 
 TASK_PRIMARY = {
@@ -151,7 +151,8 @@ def call_groq(
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            safe_tokens = min(int(max_tokens), int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "900")))
+            ceiling = int(os.getenv("GROQ_MAX_OUTPUT_TOKENS", "2200"))
+            safe_tokens = min(int(max_tokens), max(ceiling, 1800))
             resp = client.chat.completions.create(
                 model=model, messages=messages, temperature=temperature, max_tokens=safe_tokens,
             )
