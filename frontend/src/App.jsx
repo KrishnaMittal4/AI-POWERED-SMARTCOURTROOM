@@ -89,6 +89,7 @@ export default function App({ user, onLogout }) {
   const [mootQuery, setMootQuery] = useState('')
   const [quickPdfUploading, setQuickPdfUploading] = useState(false)
   const [initialCaseTab, setInitialCaseTab] = useState('overview')
+  const [initialCaseMode, setInitialCaseMode] = useState(null)
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
   const quickPdfInputRef = useRef(null)
@@ -178,9 +179,10 @@ export default function App({ user, onLogout }) {
       const dDoc = await rDoc.json().catch(() => ({}))
       if (!rDoc.ok) throw new Error(dDoc.detail || 'Failed to upload and index document.')
 
-      // 3. Refresh and open directly into "Ask LEXAI"
+      // 3. Refresh and open directly into "Ask LEXAI" — case-only mode (no global corpus search)
       await refreshCases()
       setInitialCaseTab('ask')
+      setInitialCaseMode('case')
       setActiveCaseId(newCaseId)
       setCasesOpen(false)
       setUploadStatus({
@@ -647,10 +649,11 @@ export default function App({ user, onLogout }) {
               activeCase={activeCase}
               capabilities={health.capabilities||{}}
               onCaseChanged={refreshCases}
-              onBack={()=>{setActiveCaseId('');setCasesOpen(true);setInitialCaseTab('overview')}}
+              onBack={()=>{setActiveCaseId('');setCasesOpen(true);setInitialCaseTab('overview');setInitialCaseMode(null)}}
               onDeleteCase={()=>deleteCaseById(activeCase.id)}
               initialTab={initialCaseTab}
               initialQuestion={question}
+              initialMode={initialCaseMode}
             />
           )}
 
