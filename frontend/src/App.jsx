@@ -101,8 +101,8 @@ export default function App({ user, onLogout }) {
   const [streamingVerifying, setStreamingVerifying] = useState(false)
 
   const activeCase = useMemo(() => cases.find((c) => c.id === activeCaseId) || null, [cases, activeCaseId])
-  const globalCorpusAvailable = health.capabilities?.global_judgment_corpus !== false
-  const developerToolsAvailable = health.capabilities?.developer_tools !== false
+  const globalCorpusAvailable = health.capabilities?.global_judgment_corpus === true
+  const developerToolsAvailable = health.capabilities?.developer_tools === true
   const historyScope = `${user.id}:${activeCaseId || 'global'}`
   const entry = useMemo(() => history.find((h) => h.id === activeId) || null, [history, activeId])
 
