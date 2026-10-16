@@ -259,16 +259,37 @@ export default function App({ user, onLogout }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // --- Non-streaming query (legacy) ---
+  // --- Query execution: PDF data if uploaded/active, else General Legal AI ---
   const runClassic = useCallback(async (q, k, wider = false) => {
     wider ? setLoadingWider(true) : setLoading(true)
     setError(null)
     try {
-      const generalMode = researchSource === 'general'
-      const res = await apiFetch(`${API_BASE}${generalMode ? '/query/general' : '/query'}`, {
+      // 1. If user has an active case / uploaded PDF, query the case PDF with verified citations
+      if (activeCaseId) {
+        const res = await apiFetch(`${API_BASE}/cases/${activeCaseId}/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q, mode: 'case', top_k: k, verify }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(typeof body.detail === 'string' ? body.detail : `Request failed (${res.status})`)
+        }
+        const data = await res.json()
+        const item = { id: String(Date.now()), ts: Date.now(), question: q, topK: k, saved: false, ...data }
+        setHistory((h) => [item, ...h.filter((x) => !(wider && x.id === activeId))])
+        setActiveId(item.id)
+        setFocus(null)
+        focusAnswer.current = true
+        setAnnounce('Case PDF analysis ready.')
+        return
+      }
+
+      // 2. Otherwise (no PDF uploaded), answer using General Legal AI
+      const res = await apiFetch(`${API_BASE}/query/general`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, top_k: k, verify: generalMode ? false : verify }),
+        body: JSON.stringify({ question: q, top_k: k, verify: false }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -280,11 +301,7 @@ export default function App({ user, onLogout }) {
       setActiveId(item.id)
       setFocus(null)
       focusAnswer.current = true
-      if (data.not_found) setAnnounce('Not covered by the judgments. No answer was written.')
-      else {
-        const sum = summarize(data.verification)
-        setAnnounce(`Answer ready.${sum ? ` ${sum.total} citation${sum.total === 1 ? '' : 's'} checked.` : ''}${data.weak_match ? ' Weak match.' : ''}`)
-      }
+      setAnnounce('General legal analysis ready.')
     } catch (err) {
       setAnnounce('The request failed.')
       setError(
@@ -295,7 +312,7 @@ export default function App({ user, onLogout }) {
     } finally {
       wider ? setLoadingWider(false) : setLoading(false)
     }
-  }, [verify, activeId, researchSource])
+  }, [verify, activeId, activeCaseId])
 
   // --- Streaming query (SSE) ---
   const runStream = useCallback((q, k) => {
@@ -553,9 +570,6 @@ export default function App({ user, onLogout }) {
           {/* Show the compact ask bar only when viewing results */}
           {(entry || loading || error) && (
           <form className="ask" onSubmit={submit} role="search">
-            {appMode === 'research' && globalCorpusAvailable && (
-              <div className="rag-toggle-row compact"><span>Judgment RAG</span><button type="button" className={`rag-toggle ${researchSource!=='general'?'on':'off'}`} onClick={()=>setResearchSource(researchSource==='general'?'judgments':'general')} aria-pressed={researchSource!=='general'}><span className="rag-toggle-knob"/><b>{researchSource!=='general'?'ON':'OFF'}</b></button><small>{researchSource==='general'?'General AI · corpus citations unavailable':'848 judgments · grounded & verified'}</small></div>
-            )}
             <div className="ask-row">
               <input
                 ref={inputRef}
@@ -576,8 +590,8 @@ export default function App({ user, onLogout }) {
             {settingsOpen && (
               <div className="options">
                 <label className="check">
-                  <input type="checkbox" checked={verify} disabled={researchSource==='general'} onChange={(e) => setVerify(e.target.checked)} />
-                  {researchSource==='general' ? 'Corpus verification unavailable in General AI mode' : 'Verify citations against source judgments'}
+                  <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
+                  {activeCaseId ? 'Verify citations against uploaded case PDF' : 'Verify legal citations and propositions'}
                 </label>
                 <label className="check">
                   <input type="checkbox" checked={useStreaming} onChange={(e) => setUseStreaming(e.target.checked)} />
@@ -661,8 +675,6 @@ export default function App({ user, onLogout }) {
                 </button>
               </div>
 
-              {appMode === 'research' && globalCorpusAvailable && (<div className="rag-toggle-row hero-toggle"><span>Judgment RAG</span><button type="button" className={`rag-toggle ${researchSource!=='general'?'on':'off'}`} onClick={()=>setResearchSource(researchSource==='general'?'judgments':'general')} aria-pressed={researchSource!=='general'} title="Use the indexed judgment knowledge base"><span className="rag-toggle-knob"/><b>{researchSource!=='general'?'ON':'OFF'}</b></button><small>{researchSource==='general'?'General AI mode · judgment corpus bypassed':'848 judgments · grounded research'}</small></div>)}
-
               <div className="hero-eyebrow">
                 {appMode === 'citizen' ? '🛡️ Everyday Citizen Legal Advisor · No Jargon' : '⚖ Indian Legal Intelligence System'}
               </div>
@@ -670,13 +682,13 @@ export default function App({ user, onLogout }) {
                 {appMode === 'citizen' ? (
                   <>Describe what happened to you.<br />We'll tell you the law.</>
                 ) : (
-                  <>{globalCorpusAvailable ? <>What do you want to find<br />in the judgments?</> : <>Analyze your case.<br />Ground every fact in evidence.</>}</>
+                  <>Analyze your case.<br />Ground every fact in evidence.</>
                 )}
               </h1>
               <p className="hero-subtitle">
                 {appMode === 'citizen'
                   ? 'Tell us your issue in plain English or Hinglish. We identify the applicable Indian laws, your legal rights, and give you an exact 3-step action roadmap.'
-                  : (!globalCorpusAvailable ? 'Production mode uses private case RAG for uploaded case files. The research-only judgment corpus is not deployed.' : (researchSource==='general' ? 'General AI mode is active. The local research judgment corpus is bypassed for this query.' : 'Every answer is grounded in your indexed judgment knowledge base, with cited cases checked and verified against source passages.'))}
+                  : 'Ask any legal question for instant analysis, or upload a case PDF to ground every fact and argument in evidence.'}
               </p>
 
               {appMode === 'citizen' ? (
