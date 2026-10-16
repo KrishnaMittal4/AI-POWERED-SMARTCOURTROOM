@@ -11,9 +11,13 @@ import TiltCard from './components/TiltCard.jsx'
 import CitizenAdviceView from './components/CitizenAdviceView.jsx'
 import DraftModal from './components/DraftModal.jsx'
 import VoiceInput from './components/VoiceInput.jsx'
+import CaseWorkspace from './components/CaseWorkspace.jsx'
+import CasesDashboard from './components/CasesDashboard.jsx'
+import RagLab from './components/RagLab.jsx'
 import { loadHistory, saveHistory, summarize, streamQuery } from './lib/utils.js'
+import { apiFetch } from './lib/auth.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const EXAMPLES = [
   'What must a complainant prove to succeed under Section 138 of the Negotiable Instruments Act?',
@@ -37,25 +41,37 @@ function useLocal(key, initial) {
   return [v, setV]
 }
 
-export default function App() {
+export default function App({ user, onLogout }) {
   const [question, setQuestion] = useState('')
   const [loading, setLoading] = useState(false)
   const [loadingWider, setLoadingWider] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [error, setError] = useState(null)
-  const [history, setHistory] = useState(loadHistory)
+  const [cases, setCases] = useState([])
+  const [activeCaseId, setActiveCaseId] = useState(() => localStorage.getItem(`smart-courtroom:active-case:${user.id}`) || '')
+  const [history, setHistory] = useState(() => loadHistory(`${user.id}:global`))
   const [activeId, setActiveId] = useState(null)
   const [focus, setFocus] = useState(null)
   const [health, setHealth] = useState({ state: 'checking' })
+  const [healthOpen, setHealthOpen] = useState(false)
   const [menu, setMenu] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcuts, setShortcuts] = useState(false)
   const [announce, setAnnounce] = useState('')
   const focusAnswer = useRef(false)
   const [theme, setTheme] = useLocal('smart-courtroom:theme', 'dark')
+  const [accent, setAccent] = useLocal('smart-courtroom:accent', 'indigo')
   const [topK, setTopK] = useLocal('smart-courtroom:topk', 3)
   const [verify, setVerify] = useLocal('smart-courtroom:verify', true)
   const [useStreaming, setUseStreaming] = useLocal('smart-courtroom:streaming', true)
+  const [ragInspector, setRagInspector] = useLocal('smart-courtroom:rag-inspector', false)
+  const [ragLabOpen, setRagLabOpen] = useState(false)
+  const openRagLab = (e) => {
+    e?.preventDefault?.()
+    e?.stopPropagation?.()
+    setRagLabOpen(true)
+  }
+  const [researchSource, setResearchSource] = useLocal('smart-courtroom:research-source', 'judgments')
   const [customExamples, setCustomExamples] = useLocal('smart-courtroom:custom-examples', null)
   const [appMode, setAppMode] = useLocal('smart-courtroom:appMode', 'research')
   const [citizenResult, setCitizenResult] = useState(null)
@@ -64,7 +80,12 @@ export default function App() {
   const [draftPrefill, setDraftPrefill] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState(null)
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [uploadFiles, setUploadFiles] = useState([])
+  const [existingJudgments, setExistingJudgments] = useState(new Set())
+  const [replaceExisting, setReplaceExisting] = useState(false)
   const [mootOpen, setMootOpen] = useState(false)
+  const [casesOpen, setCasesOpen] = useState(false)
   const [mootQuery, setMootQuery] = useState('')
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -76,10 +97,45 @@ export default function App() {
   const [streamingSources, setStreamingSources] = useState(null)
   const [streamingVerifying, setStreamingVerifying] = useState(false)
 
+  const activeCase = useMemo(() => cases.find((c) => c.id === activeCaseId) || null, [cases, activeCaseId])
+  const globalCorpusAvailable = health.capabilities?.global_judgment_corpus !== false
+  const developerToolsAvailable = health.capabilities?.developer_tools !== false
+  const historyScope = `${user.id}:${activeCaseId || 'global'}`
   const entry = useMemo(() => history.find((h) => h.id === activeId) || null, [history, activeId])
 
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
-  useEffect(() => { saveHistory(history) }, [history])
+  useEffect(() => { document.documentElement.dataset.accent = accent }, [accent])
+  useEffect(() => { saveHistory(history, historyScope) }, [history, historyScope])
+  useEffect(() => {
+    apiFetch(`${API_BASE}/cases`).then(r => r.json()).then(d => setCases(d.cases || [])).catch(() => {})
+  }, [])
+  useEffect(() => {
+    localStorage.setItem(`smart-courtroom:active-case:${user.id}`, activeCaseId)
+    setHistory(loadHistory(historyScope)); setActiveId(null); setQuestion(''); setCitizenResult(null); setError(null)
+  }, [activeCaseId])
+
+  async function refreshCases() {
+    const r = await apiFetch(`${API_BASE}/cases`); if (r.ok) setCases((await r.json()).cases || [])
+  }
+  async function makeCase() {
+    const title = window.prompt('Case title (for example: State vs Sharma)')?.trim(); if (!title) return
+    const description = window.prompt('Short case description (optional)') || ''
+    const r = await apiFetch(`${API_BASE}/cases`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title,description}) })
+    const d = await r.json(); if (!r.ok) { setError(d.detail || 'Could not create case.'); return }
+    await refreshCases(); setActiveCaseId(d.case.id)
+  }
+  async function removeActiveCase() {
+    if (!activeCase || !window.confirm(`Delete case workspace “${activeCase.title}” and its private documents?`)) return
+    const r = await apiFetch(`${API_BASE}/cases/${activeCase.id}`, {method:'DELETE'}); if (!r.ok) return
+    setActiveCaseId(''); await refreshCases()
+  }
+  async function deleteCaseById(caseId) {
+    const r = await apiFetch(`${API_BASE}/cases/${caseId}`, {method:'DELETE'})
+    if (!r.ok) { const d=await r.json().catch(()=>({})); throw new Error(d.detail || 'Could not delete case.') }
+    if (activeCaseId===caseId) setActiveCaseId('')
+    await refreshCases()
+    setUploadStatus({type:'success',msg:'Case and its private workspace data were permanently deleted.'})
+  }
 
   // move focus to the answer heading after a new answer arrives
   useEffect(() => {
@@ -93,9 +149,9 @@ export default function App() {
   useEffect(() => {
     let alive = true
     const ping = () =>
-      fetch(`${API_BASE}/health`)
+      apiFetch(`${API_BASE}/health`)
         .then((r) => r.json())
-        .then((d) => alive && setHealth({ state: 'ok', chunks: d.chunks_indexed }))
+        .then((d) => { if (!alive) return; setHealth({ state: 'ok', chunks: d.chunks_indexed, providers: d.providers, capabilities: d.capabilities || {}, environment: d.environment }); if (d.capabilities?.global_judgment_corpus === false) setResearchSource('general') })
         .catch(() => alive && setHealth({ state: 'down' }))
     ping()
     const t = setInterval(ping, 30000)
@@ -148,10 +204,11 @@ export default function App() {
     wider ? setLoadingWider(true) : setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`${API_BASE}/query`, {
+      const generalMode = researchSource === 'general'
+      const res = await apiFetch(`${API_BASE}${generalMode ? '/query/general' : '/query'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, top_k: k, verify }),
+        body: JSON.stringify({ question: q, top_k: k, verify: generalMode ? false : verify }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -178,7 +235,7 @@ export default function App() {
     } finally {
       wider ? setLoadingWider(false) : setLoading(false)
     }
-  }, [verify, activeId])
+  }, [verify, activeId, researchSource])
 
   // --- Streaming query (SSE) ---
   const runStream = useCallback((q, k) => {
@@ -260,12 +317,14 @@ export default function App() {
   }, [verify])
 
   const run = useCallback((q, k, wider = false) => {
-    if (useStreaming && !wider) {
+    // General AI deliberately bypasses retrieval, so it uses the non-streaming
+    // general endpoint. Judgment/Both modes preserve the full hybrid RAG flow.
+    if (researchSource !== 'general' && useStreaming && !wider) {
       runStream(q, k)
     } else {
       runClassic(q, k, wider)
     }
-  }, [useStreaming, runStream, runClassic])
+  }, [useStreaming, runStream, runClassic, researchSource])
 
   async function runCitizenAdvice(incidentText) {
     setCitizenLoading(true)
@@ -273,7 +332,7 @@ export default function App() {
     setCitizenResult(null)
     setActiveId(null)
     try {
-      const res = await fetch(`${API_BASE}/citizen-advice`, {
+      const res = await apiFetch(`${API_BASE}/citizen-advice`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ incident: incidentText }),
@@ -303,12 +362,15 @@ export default function App() {
   }
 
   function newResearch() {
+    // New Research always opens a clean Advocate Research session.
+    setAppMode('research')
+    setCasesOpen(false)
     // Cancel any in-progress stream
     if (streamControllerRef.current) {
       streamControllerRef.current.abort()
       streamControllerRef.current = null
     }
-    setActiveId(null); setError(null); setQuestion(''); setFocus(null); setCitizenResult(null)
+    setActiveId(null); setError(null); setQuestion(''); setFocus(null); setCitizenResult(null); setResearchSource('judgments')
     setStreamingId(null); setStreamingText(''); setStreamingSources(null)
     setTimeout(() => inputRef.current?.focus(), 0)
   }
@@ -324,47 +386,53 @@ export default function App() {
 
   const isStreaming = streamingId && streamingId === activeId
 
-  const handleFileUpload = async (e) => {
-    const files = e.target.files
-    if (!files || files.length === 0) return
-
-    setUploading(true)
-    setUploadStatus({ type: 'info', msg: `Uploading and indexing ${files.length} PDF(s)...` })
-
-    const formData = new FormData()
-    for (let i = 0; i < files.length; i++) {
-      formData.append('files', files[i])
-    }
-
+  async function openJudgmentUpload() {
+    setUploadStatus(null)
+    setReplaceExisting(false)
+    setUploadFiles([])
     try {
-      const res = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Upload failed (${res.status})`)
-
-      const skippedNote = data.skipped?.length ? ` Skipped: ${data.skipped.join('; ')}.` : ''
-      setUploadStatus({
-        type: data.new_chunks_count ? 'success' : 'info',
-        msg: (data.new_chunks_count
-          ? `Indexed ${data.uploaded_files?.length || 0} PDF(s) into ${data.new_chunks_count} new chunks. Total passages: ${data.total_chunks}.`
-          : 'Nothing was indexed.') + skippedNote,
-      })
-      if (data.suggested_questions && data.suggested_questions.length > 0) {
-        setCustomExamples({
-          filename: data.source_filename || (data.uploaded_files && data.uploaded_files[0]) || 'Uploaded Document',
-          questions: data.suggested_questions,
-        })
-      }
-      setHealth((prev) => ({ ...prev, chunks: data.total_chunks }))
-    } catch (err) {
-      setUploadStatus({ type: 'error', msg: err.message })
-    } finally {
-      setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
-    }
+      const r = await apiFetch(`${API_BASE}/documents`)
+      const docs = r.ok ? await r.json() : []
+      setExistingJudgments(new Set((docs || []).map(d => d.filename)))
+    } catch { setExistingJudgments(new Set()) }
+    setUploadOpen(true)
   }
+
+  function stageJudgments(fileList) {
+    const chosen = [...(fileList || [])]
+    const seen = new Set()
+    setUploadFiles(chosen.map(file => {
+      let status = 'ready', note = 'Ready to index'
+      if (!file.name.toLowerCase().endsWith('.pdf') || file.type && file.type !== 'application/pdf') { status='invalid'; note='PDF files only' }
+      else if (seen.has(file.name)) { status='invalid'; note='Duplicate selection' }
+      else if (existingJudgments.has(file.name)) { status='exists'; note='Already in Knowledge Base' }
+      seen.add(file.name)
+      return { file, status, note }
+    }))
+  }
+
+  async function uploadStagedJudgments() {
+    const candidates = uploadFiles.filter(x => x.status === 'ready' || (replaceExisting && x.status === 'exists'))
+    if (!candidates.length) { setUploadStatus({type:'info',msg:'Nothing new to upload.'}); return }
+    setUploading(true)
+    setUploadFiles(items => items.map(x => candidates.includes(x) ? {...x,status:'uploading',note: replaceExisting && x.status==='exists' ? 'Replacing…' : 'Indexing…'} : x))
+    const formData = new FormData(); candidates.forEach(x => formData.append('files', x.file))
+    try {
+      const res = await apiFetch(`${API_BASE}/upload?replace_existing=${replaceExisting ? 'true' : 'false'}`, {method:'POST',body:formData})
+      const data = await res.json().catch(()=>({}))
+      if (!res.ok) throw new Error(typeof data.detail==='string'?data.detail:`Upload failed (${res.status})`)
+      const uploaded = new Set(data.uploaded_files || [])
+      setUploadFiles(items => items.map(x => uploaded.has(x.file.name) ? {...x,status:'done',note:'Indexed successfully'} : x.status==='uploading' ? {...x,status:'exists',note:'Already in Knowledge Base'} : x))
+      setHealth(prev=>({...prev,chunks:data.total_chunks}))
+      setUploadStatus({type: uploaded.size ? 'success':'info', msg: uploaded.size ? `${uploaded.size} judgment PDF${uploaded.size===1?'':'s'} added to the Legal Knowledge Base.` : 'No new judgments were added.'})
+      if (data.suggested_questions?.length) setCustomExamples({filename:data.source_filename || [...uploaded][0] || 'Uploaded Document',questions:data.suggested_questions})
+      setTimeout(()=>setUploadStatus(null),4500)
+    } catch(err) {
+      setUploadFiles(items=>items.map(x=>x.status==='uploading'?{...x,status:'error',note:err.message}:x))
+      setUploadStatus({type:'error',msg:err.message})
+    } finally { setUploading(false); if(fileInputRef.current) fileInputRef.current.value='' }
+  }
+
 
   return (
     <div className="shell">
@@ -381,36 +449,14 @@ export default function App() {
           </div>
         </div>
         <div className="top-right">
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            multiple
-            accept=".pdf"
-            style={{ display: 'none' }}
-          />
-          <button
-            className="btn-quiet"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-            title="Upload judgment PDFs to index"
-          >
-            <span>📁</span>
-            <span>{uploading ? 'Indexing…' : 'Upload PDFs'}</span>
-          </button>
-          <button
-            className="moot-nav-btn"
-            onClick={() => { setMootQuery(question || ''); setMootOpen(true) }}
-            title="Open the Virtual Moot Court Arena"
-          >
-            <span>⚖️</span>
-            <span>Moot Court</span>
-          </button>
-          <span className={`status ${health.state}`} title={health.state === 'ok' ? `${health.chunks} passages indexed` : health.state === 'down' ? 'API not reachable' : 'Checking API'}>
-            <i aria-hidden="true" />
-            {health.state === 'ok' ? `${health.chunks} passages` : health.state === 'down' ? 'API offline' : 'Connecting'}
-          </span>
+          <div className="product-mode-nav" role="tablist" aria-label="LEXAI mode">
+            <button className={appMode==='research'?'active':''} onClick={()=>{setAppMode('research');setCitizenResult(null);setActiveCaseId('');setCasesOpen(false)}}>Advocate Research</button>
+            <button className={appMode==='citizen'?'active':''} onClick={()=>{setAppMode('citizen');setActiveCaseId('');setCasesOpen(false);setError(null)}}>Citizen Advisor</button>
+          </div>
+          <input type="file" ref={fileInputRef} onChange={(e)=>stageJudgments(e.target.files)} multiple accept=".pdf" style={{display:'none'}} />
+          <div className="health-wrap"><button className={`status ${health.state}`} onClick={()=>setHealthOpen(v=>!v)} title="System status"><i aria-hidden="true" />{health.state==='ok'?'System':health.state==='down'?'Offline':'Connecting'}</button>{healthOpen&&<div className="health-popover"><b>LEXAI System</b><div><span>Legal Knowledge Base</span><strong className={health.state==='ok'?'ok':'warn'}>{health.state==='ok'?'Indexed & Ready':'Unavailable'}</strong></div><div><span>Groq</span><strong className={health.providers?.groq?.configured?'ok':'warn'}>{health.providers?.groq?.configured?'Configured':'Not configured'}</strong></div><div><span>Gemini</span><strong className={health.providers?.gemini?.configured&&health.providers?.gemini?.sdk_available?'ok':'warn'}>{health.providers?.gemini?.configured?(health.providers?.gemini?.sdk_available?'Configured':'SDK issue'):'Not configured'}</strong></div><small>Health view does not consume provider quota.</small></div>}</div>
+          <div className="user-chip" title={user.email}><span className="user-avatar">{(user.name || user.email).charAt(0).toUpperCase()}</span><span className="user-chip-text"><b>{user.name}</b><small>{user.email}</small></span></div>
+          <button className="btn-quiet" onClick={onLogout} title="Sign out">Sign out</button>
           <button className="btn-quiet" onClick={() => setShortcuts(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
           <button className="theme-toggle" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>{theme === 'dark' ? '☀️' : '🌙'}</button>
         </div>
@@ -435,6 +481,11 @@ export default function App() {
           history={history} activeId={activeId} open={menu}
           onOpen={openItem} onNew={newResearch} onToggleSave={toggleSave}
           onDelete={remove} onClear={() => { setHistory([]); setActiveId(null) }} onClose={() => setMenu(false)}
+          appMode={appMode}
+          onGlobal={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(false);newResearch()}}
+          onCases={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(true);setActiveId(null);setCitizenResult(null)}}
+          onMoot={()=>{setMootQuery(question||'');setMootOpen(true)}}
+          onDraft={()=>{setDraftPrefill(null);setCitizenDraftOpen(true)}}
         />
         {menu && <div className="scrim" onClick={() => setMenu(false)} />}
 
@@ -442,6 +493,9 @@ export default function App() {
           {/* Show the compact ask bar only when viewing results */}
           {(entry || loading || error) && (
           <form className="ask" onSubmit={submit} role="search">
+            {appMode === 'research' && globalCorpusAvailable && (
+              <div className="rag-toggle-row compact"><span>Judgment RAG</span><button type="button" className={`rag-toggle ${researchSource!=='general'?'on':'off'}`} onClick={()=>setResearchSource(researchSource==='general'?'judgments':'general')} aria-pressed={researchSource!=='general'}><span className="rag-toggle-knob"/><b>{researchSource!=='general'?'ON':'OFF'}</b></button><small>{researchSource==='general'?'General AI · corpus citations unavailable':'848 judgments · grounded & verified'}</small></div>
+            )}
             <div className="ask-row">
               <input
                 ref={inputRef}
@@ -452,9 +506,8 @@ export default function App() {
                 aria-label="Legal question"
               />
               <VoiceInput
-                onTranscript={(text, isFinal) => {
-                  setQuestion((prev) => (isFinal ? (prev ? `${prev} ${text}` : text) : text))
-                }}
+                value={question}
+                onTranscript={(text) => setQuestion(text)}
                 disabled={loading || citizenLoading}
               />
               <button className="btn-primary" type="submit" disabled={loading || question.trim().length < 3}>{loading ? 'Researching…' : 'Ask'}</button>
@@ -462,18 +515,39 @@ export default function App() {
             </div>
             {settingsOpen && (
               <div className="options">
-                <label>
-                  Passages to retrieve: <b>{topK}</b>
-                  <input type="range" min="1" max="10" value={topK} onChange={(e) => setTopK(Number(e.target.value))} />
-                </label>
                 <label className="check">
-                  <input type="checkbox" checked={verify} onChange={(e) => setVerify(e.target.checked)} />
-                  Verify citations (slower, uses both checking models)
+                  <input type="checkbox" checked={verify} disabled={researchSource==='general'} onChange={(e) => setVerify(e.target.checked)} />
+                  {researchSource==='general' ? 'Corpus verification unavailable in General AI mode' : 'Verify citations against source judgments'}
                 </label>
                 <label className="check">
                   <input type="checkbox" checked={useStreaming} onChange={(e) => setUseStreaming(e.target.checked)} />
-                  Stream answer (shows tokens as they arrive)
+                  Stream answer as it is generated
                 </label>
+                <div className="appearance-setting">
+                  <div className="appearance-heading"><div><b>Appearance</b><small>Accent color</small></div><span className="accent-current">{accent}</span></div>
+                  <div className="accent-picker" role="radiogroup" aria-label="Accent color">
+                    {[
+                      ['indigo','#6366f1'],['blue','#3b82f6'],['emerald','#22c55e'],
+                      ['teal','#14b8a6'],['purple','#8b5cf6'],['gold','#f59e0b']
+                    ].map(([name,color]) => (
+                      <button key={name} type="button" role="radio" aria-checked={accent===name}
+                        className={`accent-swatch ${accent===name?'active':''}`}
+                        onClick={()=>setAccent(name)} title={`${name[0].toUpperCase()+name.slice(1)} accent`}>
+                        <span style={{background:color}} />{name}
+                      </button>
+                    ))}
+                  </div>
+                  <small className="appearance-note">Green, amber and red remain reserved for verification, warnings and errors.</small>
+                </div>
+                {developerToolsAvailable && globalCorpusAvailable && <details className="rag-inspector-settings" open={ragInspector}>
+                  <summary onClick={(e)=>{e.preventDefault();setRagInspector(!ragInspector)}}>Developer · RAG Inspector</summary>
+                  <p>Technical retrieval controls are hidden from normal research. Use these for evaluation and viva demonstrations.</p>
+                  <div className="rag-lab-launch-row">
+                    <button type="button" className="btn-primary rag-lab-launch" onMouseDown={(e)=>e.stopPropagation()} onClick={openRagLab}>Open RAG Lab</button>
+                    <small>Inspector · 100-question benchmark · Adaptive V4.1</small>
+                  </div>
+                  <label>Retrieved candidates: <b>{topK}</b><input type="range" min="1" max="10" value={topK} onChange={(e) => setTopK(Number(e.target.value))} /></label>
+                </details>}
               </div>
             )}
           </form>
@@ -490,7 +564,14 @@ export default function App() {
             <GavelLoader elapsed={elapsed} verify={verify && !citizenLoading} />
           )}
 
-          {!loading && !citizenLoading && !entry && !citizenResult && !error && (
+          {!loading && !citizenLoading && !entry && !citizenResult && !error && casesOpen && (
+            <CasesDashboard cases={cases} onCreate={makeCase} onDelete={deleteCaseById} onOpen={(id)=>{setActiveCaseId(id);setCasesOpen(false)}} />
+          )}
+          {!loading && !citizenLoading && !entry && !citizenResult && !error && activeCase && !casesOpen && (
+            <CaseWorkspace activeCase={activeCase} capabilities={health.capabilities||{}} onCaseChanged={refreshCases} onBack={()=>{setActiveCaseId('');setCasesOpen(true)}} onDeleteCase={()=>deleteCaseById(activeCase.id)} />
+          )}
+
+          {!loading && !citizenLoading && !entry && !citizenResult && !error && !activeCase && !casesOpen && (
             <div className="home-hero">
               {/* Mode Switcher Toggle */}
               <div className="mode-switcher-bar" role="tablist" aria-label="Platform Mode">
@@ -512,6 +593,8 @@ export default function App() {
                 </button>
               </div>
 
+              {appMode === 'research' && globalCorpusAvailable && (<div className="rag-toggle-row hero-toggle"><span>Judgment RAG</span><button type="button" className={`rag-toggle ${researchSource!=='general'?'on':'off'}`} onClick={()=>setResearchSource(researchSource==='general'?'judgments':'general')} aria-pressed={researchSource!=='general'} title="Use the indexed judgment knowledge base"><span className="rag-toggle-knob"/><b>{researchSource!=='general'?'ON':'OFF'}</b></button><small>{researchSource==='general'?'General AI mode · judgment corpus bypassed':'848 judgments · grounded research'}</small></div>)}
+
               <div className="hero-eyebrow">
                 {appMode === 'citizen' ? '🛡️ Everyday Citizen Legal Advisor · No Jargon' : '⚖ Indian Legal Intelligence System'}
               </div>
@@ -519,13 +602,13 @@ export default function App() {
                 {appMode === 'citizen' ? (
                   <>Describe what happened to you.<br />We'll tell you the law.</>
                 ) : (
-                  <>What do you want to find<br />in the judgments?</>
+                  <>{globalCorpusAvailable ? <>What do you want to find<br />in the judgments?</> : <>Analyze your case.<br />Ground every fact in evidence.</>}</>
                 )}
               </h1>
               <p className="hero-subtitle">
                 {appMode === 'citizen'
                   ? 'Tell us your issue in plain English or Hinglish. We identify the applicable Indian laws, your legal rights, and give you an exact 3-step action roadmap.'
-                  : 'Every answer is sourced exclusively from your uploaded judgments corpus — with each cited case checked, verified, and colour-coded for accuracy.'}
+                  : (!globalCorpusAvailable ? 'Production mode uses private case RAG for uploaded case files. The research-only judgment corpus is not deployed.' : (researchSource==='general' ? 'General AI mode is active. The local research judgment corpus is bypassed for this query.' : 'Every answer is grounded in your indexed judgment knowledge base, with cited cases checked and verified against source passages.'))}
               </p>
 
               {appMode === 'citizen' ? (
@@ -543,6 +626,17 @@ export default function App() {
                   <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Precedent Analysis</TiltCard>
                 </div>
               )}
+
+              {appMode === 'research' && (
+                <div className="advocate-tool-strip" aria-label="Advocate tools">
+                  {globalCorpusAvailable && <button type="button" onClick={openJudgmentUpload} disabled={uploading}><span>📁</span><b>{uploading ? 'Indexing PDFs…' : 'Upload Judgments'}</b><small>Add judgments to the research corpus</small></button>}
+                  <button type="button" onClick={() => setCasesOpen(true)}><span>🗂️</span><b>My Cases</b><small>Open private case workspaces</small></button>
+                  <button type="button" onClick={() => { setMootQuery(question || ''); setMootOpen(true) }}><span>⚖️</span><b>Moot Court</b><small>Simulate arguments before an AI bench</small></button>
+                  <button type="button" onClick={() => { setDraftPrefill(null); setCitizenDraftOpen(true) }}><span>✎</span><b>Legal Drafting</b><small>Prepare a structured legal draft</small></button>
+                </div>
+              )}
+
+
 
               {/* Big Hero Chat Input */}
               <form className="hero-chat-form" onSubmit={submit}>
@@ -566,9 +660,8 @@ export default function App() {
                     <span className="hero-chat-hint">Press Enter to ask · Shift+Enter for new line</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                       <VoiceInput
-                        onTranscript={(text, isFinal) => {
-                          setQuestion((prev) => isFinal ? (prev ? `${prev} ${text}` : text) : text)
-                        }}
+                        value={question}
+                        onTranscript={(text) => setQuestion(text)}
                         disabled={loading || citizenLoading}
                       />
                       <button
@@ -677,6 +770,8 @@ export default function App() {
           )}
         </main>
       </div>
+      {globalCorpusAvailable && uploadOpen && <div className="modal-backdrop" onMouseDown={(e)=>{if(e.target===e.currentTarget&&!uploading)setUploadOpen(false)}}><section className="judgment-upload-modal" role="dialog" aria-modal="true" aria-label="Upload judgments"><header><div><span className="eyebrow">LEGAL KNOWLEDGE BASE</span><h2>Upload Judgments</h2><p>Add PDF judgments without exposing raw indexed passages.</p></div><button className="modal-close" disabled={uploading} onClick={()=>setUploadOpen(false)}>✕</button></header><button className="judgment-dropzone" type="button" onClick={()=>fileInputRef.current?.click()} onDragOver={(e)=>e.preventDefault()} onDrop={(e)=>{e.preventDefault();stageJudgments(e.dataTransfer.files)}} disabled={uploading}><span>📄</span><b>Select judgment PDFs</b><small>PDF only · duplicates are detected before indexing</small></button>{uploadFiles.length>0&&<div className="judgment-file-list">{uploadFiles.map((x,i)=><div className={`judgment-file-row ${x.status}`} key={`${x.file.name}-${i}`}><span className="file-icon">📄</span><div><b>{x.file.name}</b><small>{(x.file.size/1024/1024).toFixed(2)} MB · {x.note}</small></div><span className="file-state">{x.status==='done'?'✓':x.status==='uploading'?'…':x.status==='exists'?'↻':x.status==='error'?'!':x.status==='invalid'?'×':'Ready'}</span></div>)}</div>}{uploadFiles.some(x=>x.status==='exists')&&<label className="replace-check"><input type="checkbox" checked={replaceExisting} onChange={e=>setReplaceExisting(e.target.checked)}/><span><b>Replace existing judgments</b><small>Re-index selected files that already exist. Existing corpus entries are replaced, not duplicated.</small></span></label>}<footer><button className="btn-quiet" disabled={uploading} onClick={()=>setUploadOpen(false)}>Close</button><button className="btn-primary" disabled={uploading||!uploadFiles.some(x=>x.status==='ready'||(replaceExisting&&x.status==='exists'))} onClick={uploadStagedJudgments}>{uploading?'Indexing…':'Add to Knowledge Base'}</button></footer></section></div>}
+      {developerToolsAvailable && globalCorpusAvailable && <RagLab open={ragLabOpen} onClose={()=>setRagLabOpen(false)} initialQuery={question} />}
       {shortcuts && <Shortcuts onClose={() => setShortcuts(false)} />}
       <MootCourtModal
         isOpen={mootOpen}

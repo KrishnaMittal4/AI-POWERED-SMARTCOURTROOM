@@ -32,6 +32,8 @@ import pdfplumber
 import numpy as np
 import faiss
 
+from legal_judgment_intelligence import annotate_record, preferred_roles_for_query
+
 from metadata_extraction import (  # noqa: E402  (see metadata_extraction.py)
     build_metadata,
     case_name_from_filename,   # re-exported for backward compatibility
@@ -78,6 +80,15 @@ def extract_text_and_head(pdf_path: str, head_pages: int = 2) -> tuple[str, str]
     Prefers pymupdf for 10-30x speedup with graceful fallback to pdfplumber.
     Eliminates redundant file I/O.
     """
+    # Shared page-level OCR fallback. Native extraction remains preferred.
+    try:
+        from ocr_extraction import extract_text_and_head_with_ocr
+        full, head, _pages, _summary = extract_text_and_head_with_ocr(pdf_path, head_pages)
+        if full:
+            return full, head
+    except Exception:
+        pass
+
     full_text = []
     head_text = []
 
@@ -253,7 +264,7 @@ def build_corpus(judgments_dir: str, max_workers: int = None):
         header = build_contextual_header(meta)
         for i, chunk in enumerate(chunk_text(cleaned)):
             enriched_text = f"{header}\n{chunk}" if header else chunk
-            records.append({
+            rec = {
                 "chunk_id": f"{filename}::chunk{i}",
                 "text": enriched_text,
                 "raw_text": chunk,
@@ -265,7 +276,8 @@ def build_corpus(judgments_dir: str, max_workers: int = None):
                 "bench": meta.get("bench"),
                 "scr_citation": meta.get("scr_citation"),
                 "source_file": filename,
-            })
+            }
+            records.append(annotate_record(rec))
 
     for dup, orig in skipped:
         print(f"  skipped duplicate: {dup}  (identical to {orig})")
@@ -462,6 +474,123 @@ def load_reranker_model(model_name: str = RERANKER_MODEL_NAME):
 
 
 # ---------------------------------------------------------------------------
+def _normalize_legal_text(query: str) -> str:
+    """Normalize OCR/citation noise without changing the user's displayed query."""
+    q = (query or "").replace("§", " Section ")
+    q = re.sub(r"(?i)\bsec(?:tion)?\.?\s*", "Section ", q)
+    q = re.sub(r"(?i)(?<![A-Za-z])s\.\s*(?=\d|\()", "Section ", q)
+    q = re.sub(r"(?i)\bart\.?\s*", "Article ", q)
+    q = re.sub(r"([A-Za-z])\-\s+([A-Za-z])", r"\1\2", q)  # OCR line-break hyphenation
+    q = re.sub(r"\s+", " ", q).strip()
+    return q
+
+
+def _extract_sections(normalized: str):
+    vals = re.findall(r"(?i)\bSection\s*([0-9]+[A-Za-z]?(?:\s*\([^)]*\))?)", normalized)
+    # subsection-only forms such as "section (1-A)" are legally incomplete but important.
+    vals += [f"({x.strip()})" for x in re.findall(r"(?i)\bSection\s*\(([^)]+)\)", normalized)]
+    out=[]
+    for x in vals:
+        x=re.sub(r"\s+", " ", x).strip()
+        if x not in out: out.append(x)
+    return out
+
+
+def _resolve_acts(normalized: str):
+    """Canonical statute resolver with abbreviations, historical names and conservative OCR tolerance."""
+    low=normalized.lower()
+    patterns=[
+      (r"negotiable\s+instruments?|\bni\s+act\b", "Negotiable Instruments Act"),
+      (r"code\s+of\s+criminal\s+procedure|\bcr\.?p\.?c\.?\b", "Code of Criminal Procedure"),
+      (r"indian\s+penal\s+code|\bi\.?p\.?c\.?\b", "Indian Penal Code"),
+      (r"bharatiya\s+nagarik\s+suraksha\s+sanhita|\bbnss\b", "Bharatiya Nagarik Suraksha Sanhita"),
+      (r"bharatiya\s+nyaya\s+sanhita|\bbns\b", "Bharatiya Nyaya Sanhita"),
+      (r"indian\s+evidence\s+act|\bevidence\s+act\b", "Indian Evidence Act"),
+      (r"workmen.?s\s+compensation\s+act|employees.?\s+compensation\s+act", "Employees Compensation Act"),
+      (r"constitution\s+of\s+india|\bconstitution\b", "Constitution of India"),
+      (r"probation\s+of\s+(?:the\s+)?offenders\s+act", "Probation of Offenders Act"),
+      (r"employees.?\s+state\s+insurance\s+act|\besi\s+act\b", "Employees State Insurance Act"),
+      (r"employees.?\s+provident\s+funds?.{0,30}miscellaneous\s+provisions\s+act|\bepf\s+act\b", "Employees Provident Funds and Miscellaneous Provisions Act"),
+    ]
+    acts=[]
+    for pat,name in patterns:
+        if re.search(pat,low,re.I) and name not in acts: acts.append(name)
+    # OCR-tolerant aliases observed in old judgments. Keep thresholds conservative.
+    if not acts:
+        compact=re.sub(r"[^a-z]", "", low)
+        if "workmen" in compact and ("compensa" in compact or "cpmpensa" in compact):
+            acts.append("Employees Compensation Act")
+        elif "employee" in compact and "stateinsurance" in compact:
+            acts.append("Employees State Insurance Act")
+    return acts
+
+
+def analyze_legal_query(query: str):
+    """Local deterministic legal-query intelligence. No LLM/API calls."""
+    q=(query or '').strip(); normalized=_normalize_legal_text(q); low=normalized.lower()
+    sections=_extract_sections(normalized)
+    articles=[]
+    for x in re.findall(r'(?i)\bArticle\s*([0-9]+[a-z]?(?:\s*\([^)]*\))?)', normalized):
+        x=re.sub(r'\s+',' ',x).strip()
+        if x not in articles: articles.append(x)
+    acts=_resolve_acts(normalized)
+    case_names=[]
+    m=re.search(r'([A-Z][A-Za-z0-9 .&/-]{2,80})\s+(?:v\.?|vs\.?|versus)\s+([A-Z][A-Za-z0-9 .&/-]{2,80})', q)
+    if m: case_names.append((m.group(1).strip()+' vs '+m.group(2).strip())[:160])
+    courts=[]
+    for pat,name in [(r'supreme court','Supreme Court'),(r'high court','High Court'),(r'trial court','Trial Court'),(r'district court','District Court')]:
+        if re.search(pat,low): courts.append(name)
+    kind=classify_legal_query(normalized)
+    subsection_only=any(x.startswith('(') for x in sections)
+    ambiguous=bool((sections and not acts) or subsection_only)
+    reasons=[]
+    if sections and not acts: reasons.append('A section/subsection is present but the governing Act/statute is not identified.')
+    if subsection_only: reasons.append('Only a subsection is identified; the parent section is missing.')
+    if len(normalized.split()) < 5 and (sections or articles): reasons.append('The statutory query is very short and may match many unrelated authorities.')
+    return {'query_type':kind,'sections':sections,'articles':articles,'acts':acts,'case_names':case_names,'courts':courts,
+            'ambiguous':ambiguous,'ambiguity_reasons':list(dict.fromkeys(reasons)),'complete':not ambiguous,
+            'normalized_query':normalized}
+
+
+def classify_legal_query(query: str) -> str:
+    """Cheap local router: no LLM/API call."""
+    q=_normalize_legal_text(query).lower()
+    if re.search(r'\b(v\.?|vs\.?|versus)\b|\b\d{4}\s*(scc|air|scr)\b', q): return 'case_citation'
+    if re.search(r'\b(section|article)\s*(?:\d|\()', q) or re.search(r'\b(ipc|crpc|bnss|bns|evidence act|negotiable instruments|constitution)\b',q): return 'statutory'
+    if re.search(r'\b(precedent|authority|rely on|argu(?:e|ing)|case law|support my case)\b',q): return 'advocate'
+    if re.search(r'\b(why|whether|when can|can a|principle|meaning|interpret|legal issue)\b',q): return 'semantic'
+    return 'mixed'
+
+
+def enrich_legal_query(query: str) -> str:
+    """Deterministic canonical legal aliases for sparse retrieval; no API calls."""
+    q=query or ''; analysis=analyze_legal_query(q); normalized=analysis['normalized_query']; low=normalized.lower(); extra=[]
+    canon={
+      'Negotiable Instruments Act':'Negotiable Instruments Act NI Act cheque dishonour legally enforceable debt statutory notice',
+      'Code of Criminal Procedure':'Code of Criminal Procedure CrPC criminal procedure Magistrate',
+      'Indian Penal Code':'Indian Penal Code IPC offence punishment',
+      'Bharatiya Nagarik Suraksha Sanhita':'Bharatiya Nagarik Suraksha Sanhita BNSS criminal procedure',
+      'Bharatiya Nyaya Sanhita':'Bharatiya Nyaya Sanhita BNS offence punishment',
+      'Indian Evidence Act':'Indian Evidence Act evidence proof admissibility',
+      'Employees Compensation Act':'Workmens Compensation Act Workmen Compensation Act Employees Compensation Act compensation appeal',
+      'Constitution of India':'Constitution of India constitutional jurisdiction',
+      'Probation of Offenders Act':'Probation of Offenders Act probation conviction',
+      'Employees State Insurance Act':'Employees State Insurance Act ESI Act contribution employer',
+      'Employees Provident Funds and Miscellaneous Provisions Act':'Employees Provident Funds and Miscellaneous Provisions Act EPF Act provident fund',
+    }
+    for act in analysis['acts']: extra.append(canon.get(act,act))
+    if re.search(r'\bArticle\s*226\b', normalized,re.I): extra.append('Article 226 writ jurisdiction High Court Constitution of India')
+    if re.search(r'\bSection\s*138\b', normalized,re.I): extra.append('Section 138 cheque dishonour legally enforceable debt statutory notice')
+    if re.search(r'\bSection\s*482\b', normalized,re.I): extra.append('Section 482 inherent powers High Court quashing proceedings')
+    if 'Code of Criminal Procedure' in analysis['acts'] and re.search(r'\bSection\s*164\b', normalized,re.I): extra.append('Section 164 CrPC Magistrate statement confession recording')
+    return (q+' '+' '.join(dict.fromkeys(extra))).strip()
+
+def adaptive_retrieval_profile(query: str):
+    analysis=analyze_legal_query(query); kind=analysis['query_type']
+    profiles={'statutory':(0.85,1.55,0.42),'case_citation':(0.55,1.85,0.50),'semantic':(1.35,0.95,0.22),'advocate':(1.15,1.25,0.30),'mixed':(1.0,1.25,0.30)}
+    dw,bw,st=profiles[kind]
+    return {'query_type':kind,'dense_weight':dw,'bm25_weight':bw,'rerank_stability':st,'query_analysis':analysis,'enriched_query':enrich_legal_query(query)}
+
 # STEP 8: RETRIEVAL (Hybrid: Dense FAISS + Sparse BM25 via RRF + Optional Re-ranking)
 # ---------------------------------------------------------------------------
 def search(
@@ -479,6 +608,10 @@ def search(
     rerank: bool = False,
     reranker_model = None,
     rerank_pool_size: int = 15,
+    bm25_index_dir: str = INDEX_DIR,
+    retrieval_strategy: str = None,
+    bm25_rescue_docs: int = None,
+    rerank_stability: float = None,
 ):
     """Retrieve the top_k most relevant chunks for a query.
 
@@ -492,6 +625,24 @@ def search(
     max_per_doc caps how many chunks from the SAME source_file can occupy
     the result set (default 2).
     """
+    # Retrieval quality controls. `legacy` reproduces the previous behavior.
+    # `improved` preserves strong sparse authorities in the reranker pool and
+    # blends reranker evidence with fusion rank for stability.
+    retrieval_strategy = (retrieval_strategy or os.getenv("RAG_RETRIEVAL_STRATEGY", "adaptive")).strip().lower()
+    if retrieval_strategy not in {"legacy", "improved", "adaptive"}:
+        retrieval_strategy = "improved"
+    if bm25_rescue_docs is None:
+        bm25_rescue_docs = int(os.getenv("RAG_BM25_RESCUE_DOCS", "5"))
+    if rerank_stability is None:
+        rerank_stability = float(os.getenv("RAG_RERANK_STABILITY", "0.25"))
+    bm25_rescue_docs = max(0, min(int(bm25_rescue_docs), 20))
+    rerank_stability = max(0.0, min(float(rerank_stability), 0.75))
+    adaptive_profile = adaptive_retrieval_profile(query) if retrieval_strategy == "adaptive" else None
+    if adaptive_profile:
+        dense_weight = adaptive_profile["dense_weight"]
+        bm25_weight = adaptive_profile["bm25_weight"]
+        rerank_stability = adaptive_profile["rerank_stability"]
+
     query_vec = np.asarray(
         model.encode([query], normalize_embeddings=True, convert_to_numpy=True)
     ).astype("float32")
@@ -542,8 +693,9 @@ def search(
             dense_score_map[idx] = float(dense_scores_all[0][rank_idx])
 
     # 2. BM25 candidate ranking
-    bm25 = build_or_load_bm25(records)
-    query_tokens = tokenize_for_bm25(query)
+    bm25 = build_or_load_bm25(records, index_dir=bm25_index_dir)
+    sparse_query = enrich_legal_query(query) if retrieval_strategy == "adaptive" else query
+    query_tokens = tokenize_for_bm25(sparse_query)
     bm25_scores = bm25.get_scores(query_tokens)
 
     bm25_rank = {}
@@ -567,22 +719,73 @@ def search(
     # Sort candidates by fused RRF score descending
     sorted_candidates = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
 
-    # Optional Re-ranking stage (Cross-Encoder)
+    # Optional Re-ranking stage (Cross-Encoder). Improved mode protects a
+    # handful of the strongest BM25 *documents* from being pruned before the
+    # reranker sees them. They are candidates only -- not forced final hits.
     rerank_scores_map = {}
+    final_score_map = {}
     if rerank:
-        top_pool = sorted_candidates[:rerank_pool_size]
+        top_pool = list(sorted_candidates[:rerank_pool_size])
+        if retrieval_strategy in {"improved", "adaptive"} and bm25_rescue_docs > 0:
+            rescued_docs = set()
+            for idx, _rank in sorted(bm25_rank.items(), key=lambda x: x[1]):
+                doc = records[idx].get("source_file") or records[idx].get("case_name") or str(idx)
+                if doc in rescued_docs:
+                    continue
+                rescued_docs.add(doc)
+                if idx not in top_pool:
+                    top_pool.append(idx)
+                if len(rescued_docs) >= bm25_rescue_docs:
+                    break
         if reranker_model is None:
             reranker_model = load_reranker_model()
         if reranker_model is not None and top_pool:
             pairs = [[query, records[idx]["text"]] for idx in top_pool]
             try:
-                raw_rerank_scores = reranker_model.predict(pairs)
-                ranked_order = np.argsort(raw_rerank_scores)[::-1]
-                for p_idx, score_val in zip(top_pool, raw_rerank_scores):
+                raw = np.asarray(reranker_model.predict(pairs), dtype=float)
+                for p_idx, score_val in zip(top_pool, raw):
                     rerank_scores_map[p_idx] = float(score_val)
-                sorted_candidates = [top_pool[i] for i in ranked_order] + sorted_candidates[rerank_pool_size:]
+                if retrieval_strategy in {"improved", "adaptive"} and len(top_pool) > 1:
+                    # Min-max normalize reranker and RRF signals before blending.
+                    rmin, rmax = float(raw.min()), float(raw.max())
+                    rnorm = (raw-rmin)/(rmax-rmin) if rmax > rmin else np.ones_like(raw)
+                    fvals = np.asarray([rrf_scores.get(i, 0.0) for i in top_pool], dtype=float)
+                    fmin, fmax = float(fvals.min()), float(fvals.max())
+                    fnorm = (fvals-fmin)/(fmax-fmin) if fmax > fmin else np.ones_like(fvals)
+                    blended = (1.0-rerank_stability)*rnorm + rerank_stability*fnorm
+                    final_score_map = {i: float(v) for i, v in zip(top_pool, blended)}
+                    ranked_pool = sorted(top_pool, key=lambda i: final_score_map[i], reverse=True)
+                    if retrieval_strategy == "adaptive":
+                        # Protect candidates independently supported by both retrievers.
+                        protected=[i for i in top_pool if dense_rank.get(i,999)>0 and dense_rank.get(i,999)<=3 and bm25_rank.get(i,999)<=3]
+                        for i in protected:
+                            pos=ranked_pool.index(i)
+                            max_pos=2  # zero-based: cannot fall below rank 3
+                            if pos>max_pos:
+                                ranked_pool.pop(pos); ranked_pool.insert(max_pos,i)
+                else:
+                    ranked_pool = [top_pool[i] for i in np.argsort(raw)[::-1]]
+                tail = [i for i in sorted_candidates if i not in set(top_pool)]
+                sorted_candidates = ranked_pool + tail
             except Exception as e:
                 print(f"  Note: Re-ranking pass failed, falling back to RRF ({e})")
+
+    # V4.3 legal-aware metadata. Existing indexes remain valid: old records are
+    # classified lazily, while newly ingested chunks are classified at ingestion.
+    preferred_roles = preferred_roles_for_query(query)
+    for _idx in sorted_candidates:
+        annotate_record(records[_idx])
+    if preferred_roles:
+        # Conservative role awareness: a matching legal role may move at most
+        # two positions upward. Relevance remains controlled by Adaptive V4.1.
+        ranked = list(sorted_candidates)
+        for pos in range(1, len(ranked)):
+            idx = ranked[pos]
+            if records[idx].get("legal_role") in preferred_roles:
+                target = max(0, pos - 2)
+                ranked.pop(pos)
+                ranked.insert(target, idx)
+        sorted_candidates = ranked
 
     # 4. Greedy selection respecting max_per_doc
     results = []
@@ -608,9 +811,19 @@ def search(
             "source_file": record["source_file"],
             "text": record["text"],
             "raw_text": record.get("raw_text", record["text"]),
+            "legal_role": record.get("legal_role", "UNKNOWN"),
+            "legal_role_confidence": record.get("legal_role_confidence", 0.0),
+            "legal_role_preferred": record.get("legal_role") in preferred_roles if preferred_roles else False,
         }
         if idx in rerank_scores_map:
             r_item["rerank_score"] = rerank_scores_map[idx]
+        if idx in final_score_map:
+            r_item["final_rank_score"] = final_score_map[idx]
+        r_item["retrieval_strategy"] = retrieval_strategy
+        if adaptive_profile:
+            r_item["query_type"] = adaptive_profile["query_type"]
+            r_item["adaptive_profile"] = adaptive_profile
+            r_item["retrieval_agreement"] = int(dense_rank.get(idx,999)<=3) + int(bm25_rank.get(idx,999)<=3)
         results.append(r_item)
         if len(results) >= top_k:
             break
@@ -645,6 +858,13 @@ def search(
             }
             if idx in rerank_scores_map:
                 r_item["rerank_score"] = rerank_scores_map[idx]
+            if idx in final_score_map:
+                r_item["final_rank_score"] = final_score_map[idx]
+            r_item["retrieval_strategy"] = retrieval_strategy
+            if adaptive_profile:
+                r_item["query_type"] = adaptive_profile["query_type"]
+                r_item["adaptive_profile"] = adaptive_profile
+                r_item["retrieval_agreement"] = int(dense_rank.get(idx,999)<=3) + int(bm25_rank.get(idx,999)<=3)
             results.append(r_item)
             if len(results) >= top_k:
                 break

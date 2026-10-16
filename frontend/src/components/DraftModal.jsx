@@ -1,7 +1,8 @@
+import { apiFetch } from '../lib/auth.js'
 import { useState, useEffect } from 'react'
 import { renderMarkdown } from '../lib/safeHtml.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const DRAFT_TYPES = [
   { id: 'legal_notice_recovery', title: 'Legal Notice for Recovery of Dues', desc: 'Breach of contract & recovery demand under Contract Act' },
@@ -52,7 +53,7 @@ export default function DraftModal({ isOpen, onClose, entry, prefill }) {
 
     try {
       const citeList = citations.split('\n').map((s) => s.trim()).filter(Boolean)
-      const res = await fetch(`${API_BASE}/draft/generate`, {
+      const res = await apiFetch(`${API_BASE}/draft/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,3 +1,4 @@
+from fastapi.responses import FileResponse
 """
 FastAPI Backend
 ================
@@ -25,6 +26,7 @@ from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
+from llm_router import provider_status, call_groq, call_gemini, gemini_configured
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +38,7 @@ import groq
 import numpy as np
 from groq import Groq
 
+from legal_judgment_intelligence import annotate_record
 from rag_pipeline import (
     load_index, load_embedding_model, load_reranker_model, save_index,
     INDEX_DIR, JUDGMENTS_DIR, extract_text_and_head, clean_text,
@@ -47,6 +50,15 @@ from feedback_store import FeedbackStore
 from similar_cases import find_similar, UnknownDocument
 from moot_court import run_moot_court_debate, answer_interlocutory_query, run_human_counsel_debate, reply_human_counsel
 from security import rate_limited, require_admin
+from auth import init_auth_db, create_user, authenticate, make_token, current_user
+from case_workspace import init_case_db, list_cases, create_case, delete_case, list_documents as list_case_documents, get_document_path, save_documents, delete_document as delete_case_document
+from private_case_rag import ask_case, analyze_case
+from case_intelligence import init_intelligence_db, list_notes, add_note, delete_note, overview, build_argument
+from case_engine import init_case_engine_db, get_intelligence, analyze_once, section as intelligence_section, brief as intelligence_brief
+from case_law_mapping import init_issue_map_db, get_issue_map, build_issue_map
+from rag_evaluation import inspect_query, evaluate as evaluate_retrieval, generate_benchmark, generate_realistic_benchmark
+from benchmark_runner import start as start_benchmark_job, get as get_benchmark_job, cancel as cancel_benchmark_job, result as benchmark_job_result
+import supabase_repository as supabase_repo
 
 
 load_dotenv()
@@ -58,40 +70,74 @@ state = {}
 feedback = FeedbackStore()
 index_lock = threading.RLock()   # serialises admin changes to the index (upload / delete)
 
-MAX_UPLOAD_FILES = int(os.getenv("MAX_UPLOAD_FILES", "20"))
-MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "30"))
+LEXAI_ENV = os.getenv("LEXAI_ENV", "development").strip().lower()
+RENDER_FREE_MODE = os.getenv("LEXAI_RENDER_FREE_MODE", "false").strip().lower() in {"1","true","yes","on"}
+LOW_MEMORY_MODE = os.getenv("LEXAI_LOW_MEMORY_MODE", "true" if RENDER_FREE_MODE else "false").strip().lower() in {"1","true","yes","on"}
+MAX_UPLOAD_FILES = int(os.getenv("MAX_UPLOAD_FILES", "5" if RENDER_FREE_MODE else "20"))
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "8" if RENDER_FREE_MODE else "30"))
+
+# Render Free is a public/demo profile: research-only assets must never become a
+# startup dependency even if a stale environment variable says otherwise.
+GLOBAL_CORPUS_ENABLED = False if RENDER_FREE_MODE else os.getenv("GLOBAL_JUDGMENT_CORPUS_ENABLED", "true" if LEXAI_ENV != "production" else "false").strip().lower() in {"1","true","yes","on"}
+DEVELOPER_TOOLS_ENABLED = False if RENDER_FREE_MODE else os.getenv("ENABLE_DEVELOPER_TOOLS", "true" if LEXAI_ENV != "production" else "false").strip().lower() in {"1","true","yes","on"}
+
+def _require_global_corpus():
+    if not GLOBAL_CORPUS_ENABLED or state.get("index") is None:
+        raise HTTPException(status_code=503, detail="Global judgment research corpus is not enabled in this deployment. Use Private Cases or General AI mode.")
+
+def _require_developer_tools():
+    if not DEVELOPER_TOOLS_ENABLED:
+        raise HTTPException(status_code=404, detail="Developer tools are disabled in this deployment.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- startup ---
+    init_auth_db()
+    init_case_db()
+    init_intelligence_db()
+    init_case_engine_db()
+    init_issue_map_db()
     groq_key = os.getenv("GROQ_API_KEY")
-    if not groq_key:
-        raise RuntimeError("GROQ_API_KEY not set. Copy .env.example to .env and add your key.")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    if not groq_key and not gemini_key:
+        raise RuntimeError("Set at least one AI provider key: GROQ_API_KEY or GEMINI_API_KEY.")
 
-    print("Loading FAISS index...")
-    index, records, model_name = load_index(INDEX_DIR)
+    index, records = None, []
+    model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    if GLOBAL_CORPUS_ENABLED:
+        print("Loading global research FAISS index...")
+        index, records, model_name = load_index(INDEX_DIR)
+    else:
+        print("Production mode: global 848-judgment research corpus is disabled.")
 
-    print(f"Loading embedding model '{model_name}'...")
-    embed_model = load_embedding_model(model_name)
-
-    print("Loading Cross-Encoder re-ranker (cross-encoder/ms-marco-MiniLM-L-6-v2)...")
-    reranker = load_reranker_model()
-    if reranker is None:
-        print("  Re-ranker unavailable -- falling back to RRF-only ranking.")
+    if LOW_MEMORY_MODE:
+        print(f"Low-memory mode: embedding model '{model_name}' will lazy-load on first private RAG use.")
+        embed_model = None
+        reranker = None
+        print("Low-memory mode: resident Cross-Encoder disabled; hybrid FAISS+BM25 fusion remains enabled.")
+    else:
+        print(f"Loading embedding model '{model_name}' for private-case RAG...")
+        embed_model = load_embedding_model(model_name)
+        print("Loading Cross-Encoder re-ranker (cross-encoder/ms-marco-MiniLM-L-6-v2)...")
+        reranker = load_reranker_model()
+        if reranker is None:
+            print("  Re-ranker unavailable -- falling back to RRF-only ranking.")
 
     state["index"] = index
     state["records"] = records
     state["embed_model"] = embed_model
     state["model_name"] = model_name
     state["reranker"] = reranker
-    state["groq_client"] = Groq(api_key=groq_key)
+    state["groq_client"] = Groq(api_key=groq_key) if groq_key else None
     print("Startup complete. API ready.")
 
     yield
     # --- shutdown --- (nothing to clean up currently)
     state.clear()
 
+
+from product_readiness import runtime_diagnostics
 
 app = FastAPI(title="Legal RAG API", lifespan=lifespan)
 
@@ -120,6 +166,18 @@ app.add_middleware(
 )
 
 
+
+@app.middleware("http")
+async def require_signed_in_user(request: Request, call_next):
+    path = request.url.path
+    public = path == "/health" or path.startswith("/auth/") or path in {"/docs", "/openapi.json", "/redoc"}
+    if not public and request.method != "OPTIONS":
+        try:
+            current_user(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
+
 # ---------------------------------------------------------------------------
 # GROQ ERRORS -> clean HTTP responses (never leak raw provider errors)
 # ---------------------------------------------------------------------------
@@ -144,6 +202,112 @@ async def _groq_error(request: Request, exc: Exception):
     print(f"  Groq error: {type(exc).__name__}: {exc}")
     return JSONResponse(status_code=502, content={"detail": "The AI service had a problem. Please try again."})
 
+
+class AuthSignupRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    email: str = Field(..., min_length=5, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+class AuthLoginRequest(BaseModel):
+    email: str = Field(..., min_length=5, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+
+
+@app.post("/auth/signup")
+def auth_signup(req: AuthSignupRequest):
+    if "@" not in req.email or "." not in req.email.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    user = create_user(req.name, req.email, req.password)
+    return {"token": make_token(user), "user": user}
+
+
+@app.post("/auth/login")
+def auth_login(req: AuthLoginRequest):
+    user = authenticate(req.email, req.password)
+    return {"token": make_token(user), "user": user}
+
+
+@app.get("/auth/me")
+def auth_me(user: dict = Depends(current_user)):
+    return {"user": user}
+
+
+class CaseCreateRequest(BaseModel):
+    title: str = Field(..., min_length=2, max_length=120)
+    description: str = Field('', max_length=1000)
+
+
+@app.get("/cases")
+def cases_list(user: dict = Depends(current_user)):
+    return {"cases": list_cases(user["id"])}
+
+
+@app.post("/cases")
+def cases_create(req: CaseCreateRequest, user: dict = Depends(current_user)):
+    return {"case": create_case(user["id"], req.title, req.description)}
+
+
+@app.delete("/cases/{case_id}")
+def cases_delete(case_id: str, user: dict = Depends(current_user)):
+    delete_case(user["id"], case_id)
+    return {"ok": True}
+
+
+@app.get("/cases/{case_id}/documents")
+def case_documents(case_id: str, user: dict = Depends(current_user)):
+    return {"documents": list_case_documents(user["id"], case_id)}
+
+
+@app.post("/cases/{case_id}/documents")
+async def case_documents_upload(case_id: str, files: list[UploadFile] = File(...), user: dict = Depends(current_user)):
+    if len(files) > MAX_UPLOAD_FILES: raise HTTPException(400, f"Upload at most {MAX_UPLOAD_FILES} files at once.")
+    return {"documents": await save_documents(user["id"], case_id, files, MAX_UPLOAD_MB)}
+
+
+
+@app.get("/cases/{case_id}/documents/{document_id}/file")
+def case_document_file(case_id: str, document_id: str, user: dict = Depends(current_user)):
+    path, original_name = get_document_path(user["id"], case_id, document_id)
+    return FileResponse(path, media_type="application/pdf", filename=original_name, content_disposition_type="inline")
+
+@app.delete("/cases/{case_id}/documents/{document_id}")
+def case_documents_delete(case_id: str, document_id: str, user: dict = Depends(current_user)):
+    delete_case_document(user["id"], case_id, document_id)
+    return {"ok": True}
+
+
+class CaseQueryRequest(BaseModel):
+    question: str = Field(..., min_length=3, max_length=1000)
+    mode: str = Field("case", pattern="^(case|global|both)$")
+    top_k: int = Field(3, ge=1, le=8)
+    verify: bool = True
+
+@app.post("/cases/{case_id}/query")
+def case_query(case_id: str, req: CaseQueryRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_query", "CASE_QUERY_PER_MIN", "CASE_QUERY_PER_DAY", 12, 200, use_global=False))):
+    return ask_case(user["id"], case_id, req.question, req.mode, req.top_k, req.verify,
+        state["embed_model"], state.get("reranker"), state["groq_client"],
+        state.get("index"), state.get("records"))
+
+@app.get("/cases/{case_id}/intelligence")
+def case_intelligence_get(case_id: str, user: dict = Depends(current_user)):
+    return get_intelligence(user["id"], case_id)
+
+@app.post("/cases/{case_id}/intelligence/analyze")
+def case_intelligence_analyze(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_intelligence", "CASE_INTELLIGENCE_PER_MIN", "CASE_INTELLIGENCE_PER_DAY", 2, 20, use_global=False))):
+    return analyze_once(user["id"], case_id, state["groq_client"], state["embed_model"], state.get("reranker"))
+
+@app.post("/cases/{case_id}/analysis/{kind}")
+def case_analysis(case_id: str, kind: str, user: dict = Depends(current_user)):
+    return intelligence_section(user["id"], case_id, kind)
+
+@app.get("/cases/{case_id}/issue-map")
+def case_issue_map_get(case_id: str, user: dict = Depends(current_user)):
+    return get_issue_map(user["id"], case_id)
+
+@app.post("/cases/{case_id}/issue-map/build")
+def case_issue_map_build(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_issue_map", "CASE_ISSUE_MAP_PER_MIN", "CASE_ISSUE_MAP_PER_DAY", 2, 20, use_global=False))):
+    return build_issue_map(user["id"], case_id, state["groq_client"], state["embed_model"], state.get("reranker"), state.get("index"), state.get("records", []))
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=1000, description="The legal question to ask")
@@ -173,13 +337,136 @@ class QueryResponse(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "chunks_indexed": len(state.get("records", []))}
+    return {"status": "ok", "environment": LEXAI_ENV, "render_free_mode": RENDER_FREE_MODE, "storage": {"persistent": bool(supabase_repo.enabled() and supabase_repo.configured()) or not RENDER_FREE_MODE, "mode": "supabase" if supabase_repo.enabled() else ("ephemeral-demo" if RENDER_FREE_MODE else "local"), "supabase": supabase_repo.health()}, "limits": {"max_upload_files": MAX_UPLOAD_FILES, "max_upload_mb": MAX_UPLOAD_MB}, "capabilities": {"global_judgment_corpus": bool(GLOBAL_CORPUS_ENABLED and state.get("index") is not None), "private_case_rag": True, "developer_tools": DEVELOPER_TOOLS_ENABLED, "cross_encoder": bool(state.get("reranker") is not None), "low_memory_mode": LOW_MEMORY_MODE, "ocr": os.getenv("OCR_ENABLED","true").lower() in {"1","true","yes","on"}}, **runtime_diagnostics(len(state.get("records", [])), provider_status())}
+
+
+class RagRelevanceItem(BaseModel):
+    judgment: str
+    grade: int = Field(3, ge=0, le=3)
+
+class RagEvalItem(BaseModel):
+    query: str = Field(..., min_length=3, max_length=1600)
+    relevant_files: list[str] = []
+    relevant_cases: list[str] = []
+    relevance: list[RagRelevanceItem] = []
+    category: str | None = None
+    difficulty: str | None = None
+    auto_generated: bool = False
+    needs_human_review: bool = False
+
+class RagExperimentSettings(BaseModel):
+    dense_candidates: int = Field(40, ge=5, le=200)
+    bm25_candidates: int = Field(40, ge=5, le=200)
+    rrf_candidates: int = Field(20, ge=5, le=100)
+    final_k: int = Field(5, ge=1, le=20)
+    rrf_k: int = Field(60, ge=1, le=200)
+    rerank: bool = True
+
+class RagEvalRequest(BaseModel):
+    questions: list[RagEvalItem] = Field(..., min_length=1, max_length=200)
+    top_k: int = Field(5, ge=1, le=20)
+    settings: RagExperimentSettings | None = None
+
+@app.get("/rag/inspect")
+def rag_inspect(q: str = Query(..., min_length=3, max_length=1000), top_k: int = Query(5, ge=1, le=20), dense_candidates: int = Query(40, ge=5, le=200), bm25_candidates: int = Query(40, ge=5, le=200), rrf_candidates: int = Query(20, ge=5, le=100), rrf_k: int = Query(60, ge=1, le=200), rerank: bool = Query(True), user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    if "index" not in state:
+        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    return inspect_query(q, state["index"], state["records"], state["embed_model"], state.get("reranker"), top_k, {"dense_candidates":dense_candidates,"bm25_candidates":bm25_candidates,"rrf_candidates":rrf_candidates,"final_k":top_k,"rrf_k":rrf_k,"rerank":rerank})
+
+@app.get("/rag/benchmark/generate")
+def rag_benchmark_generate(count: int = Query(100, ge=10, le=200), seed: int = Query(42, ge=0, le=999999), user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    if "records" not in state:
+        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    return generate_benchmark(state["records"], count=count, seed=seed)
+
+@app.get("/rag/benchmark/generate-realistic")
+def rag_benchmark_generate_realistic(count: int = Query(100, ge=20, le=100), seed: int = Query(84, ge=0, le=999999), user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    if "records" not in state:
+        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    return generate_realistic_benchmark(state["records"], count=count, seed=seed)
+
+@app.post("/rag/evaluate")
+def rag_evaluate(req: RagEvalRequest, user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    if "index" not in state:
+        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    questions=[x.model_dump() for x in req.questions]
+    return evaluate_retrieval(questions, state["index"], state["records"], state["embed_model"], state.get("reranker"), req.top_k, req.settings.model_dump() if req.settings else None)
+
+@app.post("/rag/evaluate/jobs")
+def rag_evaluate_start(req: RagEvalRequest, user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    if "index" not in state:
+        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    questions=[x.model_dump() for x in req.questions]
+    return start_benchmark_job(user["id"], questions, state["index"], state["records"], state["embed_model"], state.get("reranker"), req.top_k, req.settings.model_dump() if req.settings else None)
+
+@app.get("/rag/evaluate/jobs/{job_id}")
+def rag_evaluate_status(job_id: str, user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    job=get_benchmark_job(user["id"], job_id)
+    if not job: raise HTTPException(status_code=404, detail="Benchmark job not found.")
+    return job
+
+@app.post("/rag/evaluate/jobs/{job_id}/cancel")
+def rag_evaluate_cancel(job_id: str, user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    job=cancel_benchmark_job(user["id"], job_id)
+    if not job: raise HTTPException(status_code=404, detail="Benchmark job not found.")
+    return job
+
+@app.get("/rag/evaluate/jobs/{job_id}/result")
+def rag_evaluate_result(job_id: str, user: dict = Depends(current_user)):
+    _require_developer_tools()
+    _require_global_corpus()
+    job=get_benchmark_job(user["id"], job_id)
+    if not job: raise HTTPException(status_code=404, detail="Benchmark job not found.")
+    if job["status"] != "completed": raise HTTPException(status_code=409, detail=f"Benchmark is {job['status']}.")
+    return benchmark_job_result(user["id"], job_id)
+
+@app.post("/query/general", response_model=QueryResponse)
+def query_general(req: QueryRequest, _rl: None = Depends(rate_limited())):
+    """General AI mode: deliberately bypass the indexed judgment corpus.
+
+    This endpoint does NOT run FAISS, BM25, RRF, cross-encoder retrieval or
+    corpus citation verification. The 848 indexed judgments remain untouched.
+    """
+    system_prompt = (
+        "You are LEXAI in General AI mode. Answer the user's legal question clearly and cautiously. "
+        "The indexed judgment knowledge base is intentionally disabled for this request. "
+        "Do not invent case citations or claim that a proposition was verified against the local corpus. "
+        "Distinguish general legal information from professional legal advice and encourage checking current authoritative law when appropriate."
+    )
+    primary = call_groq(
+        state.get("groq_client"), req.question, system_prompt=system_prompt,
+        max_tokens=1800, temperature=0.15
+    )
+    result = primary
+    if not result.get("ok"):
+        gem = call_gemini(f"{system_prompt}\n\nUSER QUESTION:\n{req.question}", purpose="reason")
+        if gem.get("ok"):
+            result = gem
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail="General AI provider is temporarily unavailable. Please try again shortly.")
+    return QueryResponse(
+        answer=result["text"], sources=[], verification=None, not_found=False,
+        statutory_fallback=True, top_score=None, threshold=None, weak_match=False, rewritten_query=None
+    )
 
 
 @app.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest, _rl: None = Depends(rate_limited())):
-    if "index" not in state:
-        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    _require_global_corpus()
 
     result = answer_query(
         query=req.question,
@@ -210,8 +497,7 @@ def query_stream(req: QueryRequest, _rl: None = Depends(rate_limited())):
       event: done          — full accumulated answer
       event: error         — something went wrong
     """
-    if "index" not in state:
-        raise HTTPException(status_code=503, detail="Index not loaded yet.")
+    _require_global_corpus()
 
     def event_generator():
         yield from answer_query_stream(
@@ -299,6 +585,7 @@ class DocumentOut(BaseModel):
 
 @app.get("/documents", response_model=list[DocumentOut])
 def list_documents():
+    _require_global_corpus()
     """List all indexed documents with their metadata and chunk counts."""
     records = state.get("records", [])
 
@@ -362,6 +649,7 @@ def similar_cases(
     _rl: None = Depends(rate_limited("similar", "SIMILAR_RATE_PER_MIN", "SIMILAR_RATE_PER_DAY",
                                      30, 500, use_global=False)),
 ):
+    _require_global_corpus()
     """Judgments similar to a passage or to a whole judgment, grouped by document
     (one row per case, ranked by its best-matching passage). No LLM call."""
     if "index" not in state:
@@ -387,6 +675,8 @@ def get_document_chunks(filename: str):
             "text": r.get("raw_text", r.get("text", "")),
             "case_name": r.get("case_name"),
             "case_no": r.get("case_no"),
+            "legal_role": annotate_record(r).get("legal_role", "UNKNOWN"),
+            "legal_role_confidence": r.get("legal_role_confidence", 0.0),
         }
         for r in records
         if r.get("source_file") == filename
@@ -515,7 +805,8 @@ def _ingest_pdf(contents: bytes, filename: str):
     save_path = os.path.join(JUDGMENTS_DIR, filename)
     with open(save_path, "wb") as f:
         f.write(contents)
-    raw_full, raw_head = extract_text_and_head(save_path)
+    from ocr_extraction import extract_text_and_head_with_ocr
+    raw_full, raw_head, page_records, extraction_summary = extract_text_and_head_with_ocr(save_path)
     cleaned = clean_text(raw_full)
     if not cleaned:
         os.remove(save_path)
@@ -525,7 +816,7 @@ def _ingest_pdf(contents: bytes, filename: str):
     header = build_contextual_header(meta)
     records = []
     for i, chunk in enumerate(chunk_text(cleaned)):
-        records.append({
+        rec = {
             "chunk_id": f"{filename}::chunk{i}",
             "text": f"{header}\n{chunk}" if header else chunk,
             "raw_text": chunk,
@@ -537,7 +828,11 @@ def _ingest_pdf(contents: bytes, filename: str):
             "bench": meta.get("bench"),
             "scr_citation": meta.get("scr_citation"),
             "source_file": filename,
-        })
+            "extraction_method": extraction_summary.get("method", "native"),
+            "ocr_pages": extraction_summary.get("ocr_pages", 0),
+            "extraction_failed_pages": extraction_summary.get("failed_pages", []),
+        }
+        records.append(annotate_record(rec))
     return records, None
 
 
@@ -569,7 +864,7 @@ def _commit_records(new_records: list):
 
 
 @app.post("/upload", response_model=UploadResponse)
-async def upload_files(files: list[UploadFile] = File(...)):
+async def upload_files(files: list[UploadFile] = File(...), replace_existing: bool = Query(False)):
     """Upload judgment PDFs and index them incrementally.
 
     Rejects non-PDFs, files over MAX_UPLOAD_MB, more than MAX_UPLOAD_FILES per
@@ -590,8 +885,11 @@ async def upload_files(files: list[UploadFile] = File(...)):
         if not filename.lower().endswith(".pdf") or filename.startswith("."):
             skipped.append(f"{filename or '(no name)'}: not a PDF")
             continue
-        if filename in existing or filename in saved:
-            skipped.append(f"{filename}: already indexed (delete it first to replace it)")
+        if filename in saved:
+            skipped.append(f"{filename}: selected more than once")
+            continue
+        if filename in existing and not replace_existing:
+            skipped.append(f"{filename}: already indexed")
             continue
         contents = await file.read()
         if len(contents) > MAX_UPLOAD_MB * 1024 * 1024:
@@ -614,6 +912,27 @@ async def upload_files(files: list[UploadFile] = File(...)):
             uploaded_files=saved, new_chunks_count=0,
             total_chunks=len(state["records"]), skipped=skipped,
         )
+
+    # Replacement is explicit: remove old chunks only after the replacement PDF
+    # has been parsed successfully, so a bad upload cannot destroy a good index.
+    if replace_existing:
+        replacing = {name for name in saved if name in existing}
+        if replacing:
+            with index_lock:
+                records = state["records"]
+                old_index = state["index"]
+                keep_rows = [i for i, r in enumerate(records) if r.get("source_file") not in replacing]
+                if keep_rows:
+                    vectors = old_index.reconstruct_n(0, old_index.ntotal)
+                    new_index = build_faiss_index(np.ascontiguousarray(vectors[keep_rows], dtype="float32"))
+                else:
+                    new_index = faiss.IndexFlatIP(old_index.d)
+                new_base_records = [records[i] for i in keep_rows]
+                stale_bm25 = os.path.join(INDEX_DIR, "bm25.pkl")
+                if os.path.exists(stale_bm25):
+                    os.remove(stale_bm25)
+                save_index(new_index, new_base_records, state.get("model_name", "all-MiniLM-L6-v2"))
+                state["index"], state["records"] = new_index, new_base_records
 
     suggested_questions = []
     if new_records and state.get("groq_client"):
@@ -666,8 +985,8 @@ class RatioObiterRequest(BaseModel):
 def analyze_ratio_obiter(req: RatioObiterRequest, _rl: None = Depends(rate_limited())):
     """Dissect a judgment passage into binding Ratio Decidendi and non-binding Obiter Dicta."""
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     return extract_ratio_and_obiter(req.case_name, req.passage, client)
 
 
@@ -694,8 +1013,8 @@ def generate_court_draft(req: DraftRequest, _rl: None = Depends(rate_limited()))
     if req.draft_type not in DRAFT_TEMPLATES:
         raise HTTPException(status_code=400, detail=f"Unknown draft_type. Choose one of: {sorted(DRAFT_TEMPLATES)}")
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     parties = {"petitioner": req.petitioner, "respondent": req.respondent}
     return generate_legal_draft(
         draft_type=req.draft_type,
@@ -714,8 +1033,8 @@ class CitizenAdviceRequest(BaseModel):
 def get_citizen_advice(req: CitizenAdviceRequest, _rl: None = Depends(rate_limited())):
     """Analyze everyday citizen legal problems and return applicable laws, rights, and action roadmap."""
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     return analyze_citizen_incident(
         incident=req.incident,
         client=client,
@@ -723,6 +1042,53 @@ def get_citizen_advice(req: CitizenAdviceRequest, _rl: None = Depends(rate_limit
         records=state.get("records"),
         embed_model=state.get("embed_model"),
     )
+
+
+
+
+class CaseNoteRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    content: str = Field(..., min_length=1, max_length=20000)
+    kind: str = Field('note', max_length=40)
+
+class ArgumentRequest(BaseModel):
+    side: str = Field(..., pattern='^(prosecution|defence|petitioner|respondent)$')
+    issue: str = Field(..., min_length=3, max_length=2000)
+
+@app.get('/cases/{case_id}/overview')
+def case_overview(case_id: str, user: dict = Depends(current_user)):
+    return overview(user['id'],case_id)
+
+@app.get('/cases/{case_id}/notes')
+def case_notes(case_id: str, user: dict = Depends(current_user)):
+    return {'notes':list_notes(user['id'],case_id)}
+
+@app.post('/cases/{case_id}/notes')
+def case_note_add(case_id: str, req: CaseNoteRequest, user: dict = Depends(current_user)):
+    return {'note':add_note(user['id'],case_id,req.title,req.content,req.kind)}
+
+@app.delete('/cases/{case_id}/notes/{note_id}')
+def case_note_delete(case_id: str, note_id: str, user: dict = Depends(current_user)):
+    delete_note(user['id'],case_id,note_id); return {'ok':True}
+
+@app.post('/cases/{case_id}/argument')
+def case_argument(case_id: str, req: ArgumentRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_argument', 'CASE_ARGUMENT_PER_MIN', 'CASE_ARGUMENT_PER_DAY', 6, 80, use_global=False))):
+    return build_argument(user['id'],case_id,req.side,req.issue,state['groq_client'],state['embed_model'],state['reranker'],state['index'],state['records'])
+
+@app.post('/cases/{case_id}/brief')
+def case_brief(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_brief', 'CASE_BRIEF_PER_MIN', 'CASE_BRIEF_PER_DAY', 4, 40, use_global=False))):
+    return intelligence_brief(user['id'],case_id)
+
+class CaseMootRequest(BaseModel):
+    issue: str = Field(..., min_length=3, max_length=3000)
+
+@app.post('/cases/{case_id}/moot-court')
+def case_moot(case_id: str, req: CaseMootRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_moot', 'CASE_MOOT_PER_MIN', 'CASE_MOOT_PER_DAY', 3, 30, use_global=False))):
+    grounded=ask_case(user['id'],case_id,req.issue,'both',5,True,state['embed_model'],state['reranker'],state['groq_client'],state['index'],state['records'])
+    context='\n'.join(f"- {s.get('scope')}: {s.get('source_file')} p.{s.get('page') or '-'}: {s.get('text','')[:450]}" for s in grounded.get('sources',[]))
+    dispute=f"{req.issue}\n\nCASE-SPECIFIC VERIFIED RETRIEVAL CONTEXT:\n{context}"
+    result=run_moot_court_debate(dispute,state['index'],state['records'],state['embed_model'],state['groq_client'])
+    result['case_sources']=grounded.get('sources',[]); return result
 
 
 class MootCourtRequest(BaseModel):
@@ -738,8 +1104,8 @@ def simulate_moot_court(
     if "index" not in state:
         raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     try:
         return run_moot_court_debate(
             dispute=req.dispute,
@@ -768,8 +1134,8 @@ def interlocutory_question(
 ):
     """Answer a judicial question posed from the Bench to either counsel."""
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     try:
         return answer_interlocutory_query(
             dispute=req.dispute,
@@ -799,8 +1165,8 @@ def human_vs_ai_moot_court(
     if "index" not in state:
         raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     try:
         return run_human_counsel_debate(
             dispute=req.dispute,
@@ -833,8 +1199,8 @@ def human_counsel_reply(
     if "index" not in state:
         raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
-    if not client:
-        raise HTTPException(status_code=503, detail="Groq client not initialized")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
     try:
         return reply_human_counsel(
             dispute=req.dispute,

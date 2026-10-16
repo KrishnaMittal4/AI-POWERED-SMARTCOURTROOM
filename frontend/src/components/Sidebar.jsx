@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { timeAgo, tabKeys } from '../lib/utils.js'
 
-export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose }) {
+export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose, appMode, onGlobal, onCases, onMoot, onDraft }) {
   const [tab, setTab] = useState('recent')
   const [filter, setFilter] = useState('')
 
@@ -14,6 +14,14 @@ export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave
 
   return (
     <aside id="sidebar" className={`sidebar ${open ? 'open' : ''}`} aria-label="Research history">
+      {appMode === 'research' && <nav className="advocate-nav" aria-label="Advocate workspace">
+        <span className="side-label">ADVOCATE WORKSPACE</span>
+        <button onClick={()=>{onGlobal?.();onClose()}}>⌕ <span>Global Research</span></button>
+        <button onClick={()=>{onCases?.();onClose()}}>▣ <span>My Cases</span></button>
+        <button onClick={()=>{onMoot?.();onClose()}}>⚖ <span>Moot Court</span></button>
+        <button onClick={()=>{onDraft?.();onClose()}}>✎ <span>Legal Drafting</span></button>
+      </nav>}
+      <span className="side-label">RESEARCH</span>
       <button className="new-btn" onClick={() => { onNew(); onClose() }}>
         <span>＋</span>
         <span>New Research</span>

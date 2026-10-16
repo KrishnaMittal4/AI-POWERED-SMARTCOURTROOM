@@ -29,77 +29,99 @@ function CitationItem({ citation, open, onToggle, refCb, sources, query, answer,
   const passages = passagesFor(citation, sources).filter((p) => p.text)
   const s = citation.passage_support
   const verdict = verdictOf(citation)
-  const both = s?.gemini_checked
+  const secondaryChecked = Boolean(s?.gemini_checked)
+  const secondaryName = s?.secondary_provider === 'groq_fallback' ? 'Groq fallback' : 'Gemini'
+  const independent = s?.independent_provider === true
   const prec = citation.precedent_status
+  const attr = citation.attribution
+  const strength = citation.evidence_strength
+  const supported = verdict === 'yes' || verdict === 'partial'
   return (
     <li className={`cit-item v-${verdict} ${open ? 'open' : ''}`} ref={refCb}>
       <button className="cit-head" onClick={onToggle} aria-expanded={open}>
         <span className="cit-name">{citation.case_name}</span>
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <Pill verdict={verdict} />
-          {prec && (
-            <span className={`pill precedent-pill ${prec.status}`} title={prec.summary}>
-              {prec.badge}
-            </span>
-          )}
+        <div className="citation-badges">
+          <span className={`citation-primary-badge ${supported ? 'verified' : verdict}`}>
+            {verdict === 'yes' ? '✓ Citation supported' : verdict === 'partial' ? '◐ Partly supported' : verdict === 'no' ? '✕ Not supported' : verdict === 'disputed' ? '⚠ Models disagree' : '○ Verification unclear'}
+          </span>
+          {independent && secondaryChecked && <span className="citation-crosscheck-badge">✓ Independent AI cross-check</span>}
         </div>
       </button>
       {open && (
         <div className="cit-body">
-          {prec && (
-            <div className={`precedent-box ${prec.status}`}>
-              <div className="prec-badge-row">
-                <strong>{prec.badge}</strong>
-                {prec.overruled_by && <span className="overruled-alert">Overruled in: {prec.overruled_by}</span>}
-              </div>
-              <p className="prec-summary">{prec.summary}</p>
+          <div className="citation-compact-summary">
+            <div>
+              <strong>{verdict === 'yes' ? 'Source-backed citation' : VERDICT[verdict]?.label || 'Citation review'}</strong>
+              <p>{s?.reason || 'LEXAI compared the claim with the retrieved judgment passage.'}</p>
+            </div>
+          </div>
+
+          {strength && (
+            <div className={`evidence-strength ${strength.level || 'low'}`}>
+              <strong>Evidence strength: {(strength.level || 'low').toUpperCase()} · {strength.score ?? 0}/100</strong>
+              <p>{strength.reasons?.slice(0, 3).join(' · ') || 'Evidence signals are limited.'}</p>
+              {strength.warnings?.length > 0 && <small>Review: {strength.warnings.join(' · ')}</small>}
             </div>
           )}
 
-          <dl>
-            <dt>In corpus</dt>
-            <dd>
-              {citation.existence.exists_in_corpus ? 'Yes' : 'No'}
-              {citation.existence.matched_files?.length > 0 && (
-                <span className="files">{citation.existence.matched_files.map((f) => parseSource(f).title).join('; ')}</span>
-              )}
-            </dd>
-          </dl>
-          {s?.checked && (
-            both && s.agreement === false ? (
-              <div className="duel">
-                <div>
-                  <h4>Groq</h4>
-                  <p className="duel-verdict">{s.groq_verdict || 'unclear'}</p>
-                  <p>{splitDisputed(s.reason)[0]}</p>
-                </div>
-                <div>
-                  <h4>Gemini</h4>
-                  <p className="duel-verdict">{s.gemini_verdict || 'unclear'}</p>
-                  <p>{splitDisputed(s.reason)[1]}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="reason">{s.reason}</p>
-            )
-          )}
-          {passages.length > 0 && (
-            <div className="cit-passages">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 0 4px' }}>
-                <h4 style={{ margin: 0 }}>Retrieved passage{passages.length > 1 ? 's' : ''} from this case</h4>
-                <button
-                  type="button"
-                  className="btn-quiet small ratio-btn"
-                  onClick={() => onDissectRatio(citation.case_name, passages[0].text)}
-                >
-                  ⚖️ Dissect Ratio vs. Obiter
-                </button>
-              </div>
-              {passages.map((p, i) => <Passage key={i} text={p.text} query={query} answer={answer} />)}
+          {attr?.checked && (
+            <div className={`attribution-status ${attr.status || 'uncertain'}`}>
+              <strong>{attr.status === 'supported' ? '✓ Attribution supported' : attr.status === 'mismatch' ? '⚠ Attribution mismatch' : '○ Attribution uncertain'}</strong>
+              <p>{attr.reason}</p>
+              {attr.passage_roles?.length > 0 && <small>Passage role: {attr.passage_roles.join(', ').replaceAll('_', ' ')}</small>}
             </div>
           )}
-          {both && s.agreement && <p className="agree">Groq and Gemini reached the same verdict independently.</p>}
-          {s?.gemini_checked === false && s?.gemini_skip_reason && <p className="muted">Second check skipped: {s.gemini_skip_reason}</p>}
+
+          <dl className="citation-source-meta">
+            <dt>In corpus</dt>
+            <dd>
+              {citation.existence.exists_in_corpus ? '✓ Yes' : 'No'}
+              {citation.existence.matched_files?.length > 0 && (() => {
+                const names = [...new Set(citation.existence.matched_files.map((f) => parseSource(f).title.replace(/^(\d{4})\s+\1\s+/, '$1 ')))]
+                return <span className="files"> · Source: {names.join('; ')}</span>
+              })()}
+            </dd>
+          </dl>
+
+          {passages.length > 0 && (
+            <details className="source-disclosure">
+              <summary>View supporting source</summary>
+              <div className="cit-passages">
+                <div className="source-disclosure-head"><span>Source evidence used for grounding and verification</span><button type="button" className="btn-quiet small ratio-btn" onClick={() => onDissectRatio(citation.case_name, passages[0].text)}>⚖️ Ratio vs. Obiter</button></div>
+                {passages.map((p, i) => <Passage key={i} text={p.text} query={query} answer={answer} />)}
+              </div>
+            </details>
+          )}
+
+          <details className="verification-details">
+            <summary>Verification details</summary>
+            <div className="provider-checks">
+              <div><span>Corpus passage</span><strong>{passages.length ? '✓ Retrieved' : '○ Not retrieved'}</strong></div>
+              <div><span>Groq primary</span><strong>{s?.checked ? `✓ ${VERDICT[s?.groq_verdict || s?.verdict]?.label || s?.groq_verdict || s?.verdict || verdict}` : '○ Not checked'}</strong></div>
+              {secondaryChecked && <div><span>{secondaryName}</span><strong>✓ {VERDICT[s?.gemini_verdict || s?.verdict]?.label || s?.gemini_verdict || s?.verdict || verdict}</strong></div>}
+              <div><span>Independent provider</span><strong>{independent ? '✓ Yes' : '○ No'}</strong></div>
+              <div><span>Attribution</span><strong>{attr?.status === 'supported' ? '✓ Supported' : attr?.status === 'mismatch' ? '⚠ Mismatch' : attr?.checked ? '○ Uncertain' : '○ Not checked'}</strong></div>
+            </div>
+            {prec && (
+              <div className="precedent-history-note">
+                <strong>Precedent history</strong>
+                <p>{prec.status === 'verified' ? prec.summary : 'Not checked against a comprehensive authoritative citator. This does not affect whether the retrieved passage supports the claim.'}</p>
+                {prec.overruled_by && <span className="overruled-alert">Overruled in: {prec.overruled_by}</span>}
+              </div>
+            )}
+            {s?.agreement === false && secondaryChecked && (
+              <div className="duel">
+                <div><h4>Groq</h4><p className="duel-verdict">{s.groq_verdict || 'unclear'}</p><p>{splitDisputed(s.reason)[0]}</p></div>
+                <div><h4>{secondaryName}</h4><p className="duel-verdict">{s.gemini_verdict || 'unclear'}</p><p>{splitDisputed(s.reason)[1]}</p></div>
+              </div>
+            )}
+            {(s?.fallback_reason || s?.gemini_skip_reason) && (
+              <>
+                <p>{s?.fallback_reason ? `Gemini did not complete the independent cross-check after ${s.gemini_attempts || 0} attempt(s), so LEXAI used the Groq resilience fallback.` : 'The secondary verifier was unavailable. Primary corpus verification remains valid.'}</p>
+                <details className="technical-verification-error"><summary>Technical details</summary><pre>{s.fallback_reason || s.gemini_skip_reason}</pre></details>
+              </>
+            )}
+          </details>
         </div>
       )}
     </li>
@@ -124,18 +146,12 @@ function SourceItem({ source, max, query, answer, onDissectRatio, onFindSimilar 
         <span className="src-title">{info.title || source.case_name}</span>
         <button className="btn-quiet small" onClick={copy}>{copied ? 'Copied' : 'Copy cite'}</button>
       </div>
-      <div className="src-meta">
-        {info.year && <span className="year">{info.year}</span>}
-        <span className="file" title={source.source_file}>{source.source_file}</span>
-      </div>
-      <div className="score-row" title={`Similarity score ${source.score.toFixed(3)}`}>
-        <div className="bar"><div style={{ width: pct + '%' }} /></div>
-        <span>{source.score.toFixed(2)}</span>
-      </div>
+      <div className="src-meta">{info.year && <span className="year">{info.year}</span>}<span>Judgment source</span></div>
+      <details className="rag-inspector-row"><summary>RAG Inspector</summary><div className="score-row" title={`Retrieval score ${source.score.toFixed(3)}`}><div className="bar"><div style={{ width: pct + '%' }} /></div><span>{source.score.toFixed(2)}</span></div><small title={source.source_file}>{source.source_file}</small></details>
       {source.text && (
         <div style={{ marginTop: '8px', display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn-quiet small passage-toggle" aria-expanded={showText} onClick={() => setShowText((v) => !v)}>
-            {showText ? 'Hide passage' : 'Show passage'}
+            {showText ? 'Hide source' : 'View supporting source'}
           </button>
           <button
             type="button"

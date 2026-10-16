@@ -1,9 +1,10 @@
+import { apiFetch } from '../lib/auth.js'
 import { useState, useEffect, useRef } from 'react'
 import { renderMarkdown } from '../lib/safeHtml.js'
 import { playGavelSound, getPersonaVoiceConfig, cleanTextForSpeech } from '../lib/courtroomAudio.js'
 import { exportCertifiedCourtOrder } from '../lib/courtOrderPdf.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const SAMPLE_PROPOSITIONS = [
   {
@@ -174,6 +175,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [copied, setCopied] = useState(false)
+  const [showGuide, setShowGuide] = useState(true)
 
   // Audio Courtroom Narration State
   const [activeSpeaker, setActiveSpeaker] = useState(null) // null | 'petitioner' | 'respondent' | 'bench' | string
@@ -196,6 +198,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
   const replyInputRef = useRef(null)
 
   useEffect(() => {
+    if (isOpen) setShowGuide(true)
     if (isOpen && initialQuery && !dispute) {
       setDispute(initialQuery)
     }
@@ -336,7 +339,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
           }
         : { dispute: dispute.trim() }
 
-      const res = await fetch(endpoint, {
+      const res = await apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -363,7 +366,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
     const counselArg = isPet ? result.petitioner.argument : result.respondent.argument
     const counselCites = isPet ? result.petitioner.citations : result.respondent.citations
     try {
-      const res = await fetch(`${API_BASE}/moot-court/interlocutory`, {
+      const res = await apiFetch(`${API_BASE}/moot-court/interlocutory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -422,7 +425,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
     })
 
     try {
-      const res = await fetch(`${API_BASE}/moot-court/human-reply`, {
+      const res = await apiFetch(`${API_BASE}/moot-court/human-reply`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -512,6 +515,8 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
                 High-Stakes Adversarial Trial Arena · AI vs AI Simulation & Interactive "Step In As Counsel" Practice
               </p>
             </div>
+            <div className="court-header-actions">
+              <button type="button" className="btn-quiet" onClick={() => setShowGuide(true)}>How to use</button>
             <button
               className="court-exit-btn"
               onClick={() => { stopAllAudio(); onClose() }}
@@ -522,8 +527,30 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
               <span>Exit Courtroom</span>
               <kbd>Esc</kbd>
             </button>
+            </div>
           </div>
         </div>
+
+        {showGuide && (
+          <div className="moot-guide-overlay" role="dialog" aria-modal="true" aria-label="Moot Court user guide">
+            <div className="moot-guide-card">
+              <div className="moot-guide-icon">⚖️</div>
+              <div>
+                <div className="court-eyebrow">Quick user manual</div>
+                <h3>How to use the Moot Court</h3>
+                <p>Practice a complete AI trial or step in as counsel. LEXAI retrieves relevant judgments before the advocates and bench respond.</p>
+              </div>
+              <div className="moot-guide-steps">
+                <div><b>1</b><span><strong>Choose a mode</strong><small>AI vs AI for a full simulation, or Human vs AI to practise advocacy.</small></span></div>
+                <div><b>2</b><span><strong>Enter the dispute</strong><small>Paste facts or a precise question of law. You can also use a sample proposition.</small></span></div>
+                <div><b>3</b><span><strong>Run the hearing</strong><small>Review both submissions, corpus precedents, the bench decision and advocacy score.</small></span></div>
+                <div><b>4</b><span><strong>Continue interactively</strong><small>Ask bench questions, reply as counsel, listen to arguments or export the decree.</small></span></div>
+              </div>
+              <div className="moot-guide-note">AI courtroom output is a research and learning aid. Verify authorities and legal conclusions before professional use.</div>
+              <button type="button" className="hero-ask-btn moot-guide-start" onClick={() => setShowGuide(false)}>Enter Courtroom</button>
+            </div>
+          </div>
+        )}
 
         {/* ── SCROLLABLE COURTROOM FLOOR ── */}
         <div className="court-scroll-body">

@@ -13,7 +13,15 @@ python-multipart>=0.0.9   # needed for UploadFile support in FastAPI
 
 # ── LLM / AI ───────────────────────────────────────────────────────────────
 groq>=0.9.0
+google-genai>=1.0.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0
 reportlab>=4.2.0
+
+# ── Optional OCR fallback for scanned/poor PDF pages ───────────────────────
+# Native PDFs do not require these at runtime. System Tesseract must also be
+# installed for OCR pages (Windows: install Tesseract and add it to PATH).
+pytesseract>=0.3.13
+Pillow>=10.0.0
+PyMuPDF>=1.24.0

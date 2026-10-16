@@ -91,7 +91,7 @@ def _unknown(case_name: str, reason: str) -> dict:
     return {
         "case_name": case_name,
         "status": "unknown",
-        "badge": "⚪ Status unverified",
+        "badge": "⚪ Treatment not independently checked",
         "overruled_by": None,
         "summary": reason,
         "verified": False,
@@ -159,7 +159,7 @@ Output ONLY the JSON object, nothing else."""
             "source": "ai_estimate",
         }
     except Exception:
-        return _unknown(case_name, "Status check failed. Verify this case in a citator.")
+        return _unknown(case_name, "Precedent treatment could not be established automatically. The citation may still be supported by the local corpus; verify later treatment in an authoritative citator.")
 
 
 def enrich_citations_with_precedent_status(citations: list, client: Groq = None) -> list:

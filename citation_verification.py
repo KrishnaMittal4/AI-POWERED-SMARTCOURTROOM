@@ -21,18 +21,23 @@ Usage: called automatically from generate_answer.py after generation.
 import os
 import re
 from groq import Groq
+from legal_judgment_intelligence import classify_legal_role
+from product_readiness import evidence_strength, verification_overview
 
 # Cheap/fast model for the verification pass -- doesn't need to be as
 # strong as the generation model, just needs to judge entailment.
-VERIFIER_MODEL = "openai/gpt-oss-20b"
+from llm_router import (
+    GEMINI_VERIFY_MODEL as GEMINI_MODEL,
+    GROQ_VERIFY_MODEL as VERIFIER_MODEL,
+    GROQ_SECONDARY_VERIFY_MODEL as SECONDARY_GROQ_MODEL,
+    call_gemini,
+)
 
 # Second, independent verifier model (different vendor/training lineage
 # than the Groq-hosted OSS models above). Optional: only used if
 # GEMINI_API_KEY is set in the environment -- everything falls back to
 # Groq-only verification if it's missing or the call fails, so this is
 # purely additive and never breaks the pipeline.
-GEMINI_MODEL = "gemini-3.8-flash"  # gemini-2.5-flash was retired for new API
-# keys; Google's own 404 error names this as the current replacement.
 # NOTE: deliberately NOT read as a module-level constant here. A
 # module-level `os.getenv("GEMINI_API_KEY")` would be evaluated the
 # instant this file is imported -- which, depending on import order in
@@ -309,45 +314,45 @@ def check_passage_support(cited_name: str, answer_text: str, retrieved_passages:
     return {"checked": True, "verdict": verdict, "reason": reason}
 
 
-def check_passage_support_gemini(cited_name: str, answer_text: str, retrieved_passages: list, records: list) -> dict:
-    """Second, INDEPENDENT verifier using Google's Gemini API -- a
-    different vendor and training lineage from the Groq-hosted OSS models
-    used above. Two models from different lineages agreeing is a
-    meaningfully stronger signal than two sizes of the same model family
-    agreeing with each other (they're more likely to share blind spots).
-
-    Purely additive: if GEMINI_API_KEY isn't set, or the API call fails
-    for any reason (network, quota, bad key), this degrades gracefully to
-    "not checked" rather than breaking the rest of verification.
-    """
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_api_key:
-        return {"checked": False, "reason": "GEMINI_API_KEY not set -- Gemini cross-check skipped"}
-
+def check_passage_support_secondary(cited_name: str, answer_text: str, retrieved_passages: list, records: list, client: Groq) -> dict:
+    """Independent Gemini cross-check with centralized retry policy; Groq only as resilience fallback."""
     combined_passage, claim_segment = _get_passage_and_claim(cited_name, answer_text, retrieved_passages, records)
     if combined_passage is None:
-        return {"checked": False, "reason": "no retrieved passage available for this case"}
+        return {"checked": False, "reason": "no retrieved passage available for this case", "provider": "none"}
 
-    judge_prompt = _build_judge_prompt(cited_name, combined_passage, claim_segment) # type: ignore
+    judge_prompt = _build_judge_prompt(cited_name, combined_passage, claim_segment)
+    gemini = call_gemini(judge_prompt, purpose="verify")
+    if gemini.get("ok"):
+        verdict, reason = _parse_verdict(gemini.get("text", ""))
+        return {
+            "checked": True, "verdict": verdict, "reason": reason,
+            "provider": "gemini", "model": gemini.get("model", GEMINI_MODEL),
+            "gemini_attempts": gemini.get("attempts", 1), "independent_provider": True,
+        }
 
+    gemini_error = gemini.get("error", "Gemini unavailable")
     try:
-        from google import genai
-        client = genai.Client(api_key=gemini_api_key)
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=judge_prompt,
+        response = client.chat.completions.create(
+            model=SECONDARY_GROQ_MODEL,
+            messages=[{"role": "user", "content": judge_prompt}],
+            temperature=0,
         )
-        verdict_text = (response.text or "").strip()
-    except Exception as e:
-        # Network hiccup, quota exceeded, bad key, SDK not installed, etc.
-        # -- never let the secondary verifier take down the primary one.
-        return {"checked": False, "reason": f"Gemini call failed: {e}"}
+        verdict, reason = _parse_verdict((response.choices[0].message.content or "").strip())
+        return {
+            "checked": True, "verdict": verdict, "reason": reason,
+            "provider": "groq_fallback", "model": SECONDARY_GROQ_MODEL,
+            "fallback_reason": gemini_error, "gemini_attempts": gemini.get("attempts", 0),
+            "independent_provider": False,
+        }
+    except Exception as exc:
+        return {
+            "checked": False,
+            "reason": f"Secondary verification unavailable. Gemini: {gemini_error}; Groq fallback: {exc}",
+            "provider": "none", "gemini_attempts": gemini.get("attempts", 0),
+            "independent_provider": False,
+        }
 
-    verdict, reason = _parse_verdict(verdict_text)
-    return {"checked": True, "verdict": verdict, "reason": reason}
-
-
-def combine_verifier_verdicts(groq_support: dict, gemini_support: dict) -> dict:
+def combine_verifier_verdicts(groq_support: dict, secondary_support: dict) -> dict:
     """Merge the two independent verdicts into one. If Gemini wasn't
     checked (no key / call failed), just pass Groq's verdict through
     unchanged -- existing behavior for anyone not using the Gemini
@@ -356,18 +361,18 @@ def combine_verifier_verdicts(groq_support: dict, gemini_support: dict) -> dict:
     than silently picking one side -- that disagreement is itself a
     useful, reportable signal, not noise to hide.
     """
-    if not gemini_support.get("checked"):
+    if not secondary_support.get("checked"):
         combined = dict(groq_support)
         combined["gemini_checked"] = False
         # Keep the skip/failure reason (e.g. "GEMINI_API_KEY not set", or
         # a network/quota error) separate from Groq's own reason, so the
         # UI can show *why* the cross-check didn't run instead of just
         # silently omitting it.
-        combined["gemini_skip_reason"] = gemini_support.get("reason", "")
+        combined["gemini_skip_reason"] = secondary_support.get("reason", "")
         return combined
 
     groq_verdict = groq_support.get("verdict", "unclear")
-    gemini_verdict = gemini_support.get("verdict", "unclear")
+    gemini_verdict = secondary_support.get("verdict", "unclear")
 
     if groq_verdict == gemini_verdict:
         return {
@@ -376,7 +381,12 @@ def combine_verifier_verdicts(groq_support: dict, gemini_support: dict) -> dict:
             "reason": groq_support.get("reason", ""),
             "gemini_checked": True,
             "agreement": True,
-            "gemini_reason": gemini_support.get("reason", ""),
+            "gemini_reason": secondary_support.get("reason", ""),
+            "secondary_provider": secondary_support.get("provider", "gemini"),
+            "secondary_model": secondary_support.get("model", GEMINI_MODEL),
+            "fallback_reason": secondary_support.get("fallback_reason"),
+            "gemini_attempts": secondary_support.get("gemini_attempts", 0),
+            "independent_provider": secondary_support.get("independent_provider", False),
         }
 
     return {
@@ -384,14 +394,82 @@ def combine_verifier_verdicts(groq_support: dict, gemini_support: dict) -> dict:
         "verdict": "disputed",
         "reason": (
             f"Groq ({VERIFIER_MODEL}) said '{groq_verdict}': {groq_support.get('reason', '')} | "
-            f"Gemini ({GEMINI_MODEL}) said '{gemini_verdict}': {gemini_support.get('reason', '')}"
+            f"Secondary ({secondary_support.get('model', GEMINI_MODEL)}) said '{gemini_verdict}': {secondary_support.get('reason', '')}"
         ),
         "gemini_checked": True,
         "agreement": False,
         "groq_verdict": groq_verdict,
         "gemini_verdict": gemini_verdict,
+        "secondary_provider": secondary_support.get("provider", "gemini"),
+        "secondary_model": secondary_support.get("model", GEMINI_MODEL),
+        "fallback_reason": secondary_support.get("fallback_reason"),
+        "gemini_attempts": secondary_support.get("gemini_attempts", 0),
+        "independent_provider": secondary_support.get("independent_provider", False),
     }
 
+
+# ---------------------------------------------------------------------------
+# V4.4: ATTRIBUTION-AWARE VERIFICATION
+# ---------------------------------------------------------------------------
+_COURT_CLAIM_RE = re.compile(
+    r"\b(?:court|supreme court|high court|bench|it)\s+(?:held|holds|observed|found|ruled|concluded|decided|reasoned)\b|"
+    r"\b(?:held|holding|ratio decidendi|the court's view|court's reasoning)\b",
+    re.I,
+)
+_PARTY_CLAIM_RE = re.compile(
+    r"\b(?:counsel|petitioner|appellant|respondent|party)\s+(?:submitted|contended|argued|urged|claimed)\b",
+    re.I,
+)
+_COURT_ROLES = {"COURT_REASONING", "RATIO", "FINAL_ORDER"}
+_PARTY_ROLES = {"PETITIONER_ARGUMENT", "RESPONDENT_ARGUMENT"}
+
+
+def check_attribution(cited_name: str, answer_text: str, retrieved_passages: list, records: list) -> dict:
+    """Check whether the generated claim attributes a proposition to the right speaker.
+
+    This is deliberately deterministic and conservative. It does not decide whether
+    the proposition is legally correct (passage_support already does that). It asks
+    only whether wording such as "the Court held" is backed by a passage classified
+    as court reasoning/ratio/order rather than a party submission.
+    """
+    claim = _extract_claim_segment(answer_text, cited_name)
+    passage_rows = [p for p in retrieved_passages if p.get("case_name") == cited_name]
+    if not passage_rows:
+        passage_rows = [r for r in records if r.get("case_name") == cited_name][:2]
+    if not passage_rows:
+        return {"checked": False, "status": "uncertain", "reason": "No passage was available for attribution checking."}
+
+    classified = []
+    for row in passage_rows[:3]:
+        role = row.get("legal_role")
+        confidence = row.get("legal_role_confidence")
+        if not role:
+            info = classify_legal_role(row.get("raw_text") or row.get("text") or "")
+            role, confidence = info["role"], info["confidence"]
+        classified.append({"role": role or "UNKNOWN", "confidence": float(confidence or 0.0)})
+
+    roles = [x["role"] for x in classified]
+    best_conf = max((x["confidence"] for x in classified), default=0.0)
+    claims_court = bool(_COURT_CLAIM_RE.search(claim or ""))
+    claims_party = bool(_PARTY_CLAIM_RE.search(claim or ""))
+    has_court = any(r in _COURT_ROLES for r in roles)
+    has_party = any(r in _PARTY_ROLES for r in roles)
+
+    base = {
+        "checked": True,
+        "claim_type": "court_holding" if claims_court else "party_submission" if claims_party else "neutral",
+        "passage_roles": roles,
+        "role_confidence": round(best_conf, 3),
+    }
+    if claims_court and has_party and not has_court:
+        return {**base, "status": "mismatch", "reason": "The answer attributes the proposition to the Court, but the supporting passage is classified as a party submission."}
+    if claims_court and has_court:
+        return {**base, "status": "supported", "reason": "The Court attribution is supported by a court-reasoning, ratio, or final-order passage."}
+    if claims_party and has_party:
+        return {**base, "status": "supported", "reason": "The party attribution matches a petitioner/appellant/respondent argument passage."}
+    if claims_party and has_court and not has_party:
+        return {**base, "status": "mismatch", "reason": "The answer presents the proposition as a party submission, but the supporting passage is classified as the Court's reasoning or holding."}
+    return {**base, "status": "uncertain", "reason": "The passage supports review, but speaker attribution cannot be established confidently from its legal-role metadata."}
 
 # ---------------------------------------------------------------------------
 # MAIN ENTRY POINT -- runs all 3 checks for every citation found
@@ -406,16 +484,21 @@ def verify_answer(answer_text: str, retrieved_passages: list, records: list, cli
         existence = check_existence(name, records)
         metadata = check_metadata_consistency(answer_text, name, records)
         groq_support = check_passage_support(name, answer_text, retrieved_passages, records, client)
-        gemini_support = check_passage_support_gemini(name, answer_text, retrieved_passages, records)
-        support = combine_verifier_verdicts(groq_support, gemini_support)
+        secondary_support = check_passage_support_secondary(name, answer_text, retrieved_passages, records, client)
+        support = combine_verifier_verdicts(groq_support, secondary_support)
+        attribution = check_attribution(name, answer_text, retrieved_passages, records)
 
-        report["citations"].append({
+        citation = {
             "case_name": name,
             "existence": existence,
             "metadata": metadata,
             "passage_support": support,
-        })
+            "attribution": attribution,
+        }
+        citation["evidence_strength"] = evidence_strength(citation)
+        report["citations"].append(citation)
 
+    report["overview"] = verification_overview(report["citations"])
     return report
 
 
@@ -438,6 +521,7 @@ def pretty_print_verification(report: dict):
             print(f"    [Metadata]   not checked: {meta.get('reason')}")
 
         support = c["passage_support"]
+        attribution = c.get("attribution", {})
         if support.get("checked"):
             print(f"    [Support]    verdict: {support['verdict']} -- {support['reason']}")
             if support.get("gemini_checked"):
@@ -445,3 +529,5 @@ def pretty_print_verification(report: dict):
                 print(f"    [Cross-check] Groq vs Gemini: {agree_label}")
         else:
             print(f"    [Support]    not checked: {support.get('reason')}")
+        if attribution.get("checked"):
+            print(f"    [Attribution] {attribution.get('status')}: {attribution.get('reason')}")

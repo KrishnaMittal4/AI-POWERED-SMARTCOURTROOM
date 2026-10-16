@@ -1,3 +1,4 @@
+import { apiFetch } from './auth.js'
 // ---------- source filename -> readable title / date ----------
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
 
@@ -84,20 +85,20 @@ export function annotateAnswer(answer, verification) {
   return out
 }
 
-// ---------- history (localStorage) ----------
-const HISTORY_KEY = 'smart-courtroom:history:v1'
+// ---------- per-user history (localStorage) ----------
+const historyKey = (userId) => `smart-courtroom:history:v2:${userId || 'guest'}`
 
-export function loadHistory() {
+export function loadHistory(userId) {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []
+    return JSON.parse(localStorage.getItem(historyKey(userId))) || []
   } catch {
     return []
   }
 }
 
-export function saveHistory(items) {
+export function saveHistory(items, userId) {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 60)))
+    localStorage.setItem(historyKey(userId), JSON.stringify(items.slice(0, 60)))
   } catch {
     /* storage full or blocked: history is a convenience, not required */
   }
@@ -212,11 +213,11 @@ export const VERDICT_LABEL = {
 }
 
 // ---------- feedback ----------
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export async function submitFeedback({ question, answer, rating, comment, top_score, weak_match, not_found }) {
   try {
-    const res = await fetch(`${API_BASE}/feedback`, {
+    const res = await apiFetch(`${API_BASE}/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question, answer, rating, comment, top_score, weak_match, not_found }),
@@ -245,7 +246,7 @@ export async function submitFeedback({ question, answer, rating, comment, top_sc
 export function streamQuery({ question, top_k, verify, onSources, onToken, onVerification, onDone, onError }) {
   const controller = new AbortController()
 
-  fetch(`${API_BASE}/query/stream`, {
+  apiFetch(`${API_BASE}/query/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question, top_k, verify }),

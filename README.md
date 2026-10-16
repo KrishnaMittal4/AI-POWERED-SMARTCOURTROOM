@@ -135,3 +135,148 @@ assume one worker process, as in `render.yaml`.
 - Scanned (image-only) PDFs have no extractable text and are skipped.
 - Precedent status is only verified for the curated table (see above).
 - Draft templates produce starting points for an advocate to review, not filings.
+
+
+## Authentication
+
+Smart Courtroom now includes account-based access. Users can create an account or sign in; passwords are salted and hashed with PBKDF2-HMAC-SHA256, API requests require a signed bearer token, and browser research history is namespaced by user ID so accounts do not share history on the same device.
+
+For production, set `AUTH_SECRET` to a long random value in the backend environment. The default session lifetime is seven days and can be changed with `AUTH_TOKEN_TTL_SECONDS`. User accounts are stored in `users.db` by default; on hosts with ephemeral filesystems, configure `AUTH_DB_PATH` on persistent storage or migrate the auth store to a managed database before production use.
+
+### Private case workspaces
+Authenticated users can create isolated case workspaces and upload private PDF evidence/documents. Ownership is enforced server-side on every case/document endpoint. Private files are stored under `user_case_files/<user_id>/<case_id>/` and metadata is kept in `cases.db`; both are ignored by Git. Research history is namespaced by account and case in the browser. The shared legal judgment corpus remains separate from private case evidence.
+
+## Private Case Intelligence (multi-user)
+Authenticated case workspaces now reuse the main hybrid retrieval architecture without mixing private evidence into the shared judgment corpus.
+
+- Each user/case has an isolated FAISS + BM25 index under `user_case_indexes/<user>/<case>/`.
+- Private PDFs are extracted page-by-page, cleaned, chunked with overlap, embedded with the same MiniLM model, fused with BM25 via RRF, and cross-encoder reranked.
+- **Ask Case AI** supports `Case documents`, `Legal judgments`, and `Both` modes.
+- Private answers return document/page sources and can run the existing citation verifier.
+- Case intelligence tabs generate source-grounded **Timeline**, **Evidence**, and **Contradiction** analyses from private files.
+- Uploading/removing a case PDF invalidates only that case index; it is rebuilt lazily on the next private query.
+
+Runtime private indexes are excluded from Git by `.gitignore`.
+
+## Case Workspace V2
+Authenticated case workspaces now include a My Cases dashboard, private document management, Case/Global/Both hybrid RAG, timeline/evidence/contradiction analysis, a cited Legal Argument Builder, persistent per-case Research Notebook, automatic neutral Case Brief generation, and a case-aware Moot Court that grounds the simulation in retrieved private evidence plus the shared judgment corpus. Private case indexes and notes remain scoped to the authenticated owner.
+
+## Case Workspace stabilization patch
+- Fixed private/global `delete_document` name collision.
+- Case query and each expensive case-intelligence operation now have independent rate-limit scopes.
+- Timeline, evidence and contradiction analysis no longer sends the whole case to `openai/gpt-oss-120b` in one request. It maps over bounded source pages using `GROQ_ANALYSIS_MODEL` (default `openai/gpt-oss-20b`) and reduces extracted claims for contradiction detection.
+- Optional rate-limit env vars: `CASE_QUERY_PER_MIN`, `CASE_QUERY_PER_DAY`, `CASE_ANALYSIS_PER_MIN`, `CASE_ANALYSIS_PER_DAY`, `CASE_ARGUMENT_PER_MIN`, `CASE_ARGUMENT_PER_DAY`, `CASE_BRIEF_PER_MIN`, `CASE_BRIEF_PER_DAY`, `CASE_MOOT_PER_MIN`, `CASE_MOOT_PER_DAY`.
+
+## Verification clarity patch
+- Gemini secondary citation verification retries temporary 429/5xx/high-demand failures with short backoff before Groq fallback.
+- Groq fallback is explicitly labelled as a resilience fallback, not an independent-provider cross-check.
+- Citation/claim support and later precedent treatment are displayed as separate statuses.
+- Raw provider errors are hidden under a collapsible Verification details section.
+
+## Free-tier Case Intelligence Engine
+Private Case Workspace now uses a single **Analyze / Update Case** workflow. It performs local hybrid retrieval (MiniLM + FAISS + BM25/RRF + cross-encoder), sends only a compact diverse set of relevant excerpts to the analysis model, and saves one Case Intelligence record. Overview, Timeline, Evidence, Contradictions, and Case Brief reuse that record without additional LLM calls. Uploading/removing a private PDF changes the document fingerprint and marks the saved intelligence stale. Ask LEXAI, Argument Builder, and Moot Court remain dynamic because their questions/issues vary.
+
+## Central LLM routing (Gemini + Groq)
+
+LEXAI now centralizes provider/model selection in `llm_router.py`.
+
+- Citation cross-check: `GEMINI_VERIFY_MODEL` (default `gemini-3.5-flash-lite`)
+- Case Intelligence extraction: `GEMINI_EXTRACTION_MODEL` (default `gemini-3.5-flash-lite`)
+- Moot Court bench/judicial reasoning: `GEMINI_REASONING_MODEL` (default `gemini-3.8-flash`)
+- Temporary Gemini capacity/rate/server failures are retried with backoff and jitter before Groq resilience fallback.
+- Provider metadata records which provider/model actually generated a Moot Court or Case Intelligence result.
+- `/health` exposes provider configuration/SDK/model status without consuming API quota.
+
+Add `GEMINI_API_KEY` to `.env` to enable Gemini. The application still operates with Groq fallbacks when Gemini is unavailable.
+
+## Frontend V3 UX refresh
+
+The current build includes a dedicated LEXAI Frontend V3 pass: simplified Advocate/Citizen navigation, Advocate workspace sidebar, redesigned My Cases cards and permanent case deletion confirmation, sidebar-based private Case Workspace, Case Intelligence dashboard, visual Timeline/Evidence/Contradictions, private PDF source viewer, cleaner Ask LEXAI scope controls, improved Argument/Moot/Notebook views, system-health popover, responsive layouts, semantic status colors, motion with reduced-motion support, toasts, empty/error states, and removal of duplicate primary controls.
+
+Permanent case deletion also clears private documents, private retrieval artifacts, saved notes, and cached Case Intelligence for the authenticated owner.
+
+## Combined Knowledge Base UX update
+- Global Advocate Research now uses a compact Judgment RAG ON/OFF switch. ON is the default and uses the indexed judgment corpus; OFF bypasses corpus retrieval without deleting/rebuilding it. New Research resets RAG to ON.
+- The old large Research Source card and Global "Both" control were removed. Private Case Workspace still retains Case Documents / Judgments / Both.
+- Upload Judgments now opens a staged modal with PDF validation, duplicate detection, drag/drop, per-file status, optional explicit replacement/re-indexing, and compact toast feedback.
+- Existing judgment replacement removes the old indexed chunks only after the replacement PDF parses successfully, preventing accidental loss from a bad replacement upload.
+
+## RAG Quality Lab V2
+Developer > RAG Inspector now evaluates unique judgments rather than duplicate chunks. It supports canonical judgment matching, configurable candidate pools/RRF/reranking, per-question HIT/MISS diagnostics, candidate journeys, benchmark JSON/CSV import, and experiment export. RAG Lab is offline and does not call Groq or Gemini. Experiment settings do not change production Advocate Research.
+
+## RAG 100-question benchmark update
+RAG Lab can now generate a reproducible 100-question offline retrieval benchmark directly from the judgment records loaded by the local FAISS index (`GET /rag/benchmark/generate`). Generated items are grounded in real indexed passages and source judgments, carry category/difficulty metadata, graded relevance, and are explicitly marked `needs_human_review` before academic reporting. Evaluation now reports Hit@K, Precision@K, Recall@K, MRR, nDCG@K and independently measured stage latency. Normal Advocate Research settings are unchanged.
+
+## Benchmark Runner (progress/cancel/cache)
+The offline 100-question RAG benchmark now runs as a background job. RAG Lab shows real backend progress, elapsed time, ETA, current retrieval stage, and cache hits. The run can be cancelled safely; completed per-question retrieval results remain cached in memory and are reused when the same benchmark/settings are run again. Changing retrieval settings creates different cache keys. No Groq/Gemini calls are used by this runner.
+
+## RAG Evaluation V3
+
+RAG Lab now uses canonical exact ground-truth resolution after filename normalization. Fuzzy aliases no longer expand a single labelled judgment into unrelated relevant judgments. Multiple relevance is counted only when explicitly labelled in the benchmark.
+
+The offline benchmark compares six pipelines on the same questions: FAISS only, BM25 only, Legacy RRF, Legacy Full reranked, Improved weighted fusion, and Improved Full RAG. Improved evaluation defaults use dense weight 1.0, BM25 weight 1.35, five sparse-rescue judgments, and rerank stability 0.25. Exports include `evaluator_version`, strategy names, Hit@1, Hit@K, Precision@K, Recall@K, MRR, nDCG@K, latency, and the experiment settings.
+
+## Optional scanned-PDF OCR fallback
+LEXAI keeps native PDF text extraction as the default. Pages with too little/poor text are OCR-processed individually and merged back at the original page number before the existing cleaning/chunking/RAG pipeline. Judgment uploads and Private Case PDFs share this extractor. Set `OCR_ENABLED=false` to disable it. OCR requires `pytesseract`, `Pillow`, PyMuPDF, and a system Tesseract installation; missing OCR support does not prevent native-text PDFs from working.
+
+## V4.1 Safe Adaptive Retrieval
+- Adds `adaptive` alongside `legacy` and `improved` retrieval strategies.
+- Local legal query classification (statutory, citation, semantic, advocate, mixed); no LLM/API call.
+- Deterministic legal query enrichment for common statutes/aliases.
+- Query-type-specific dense/BM25 fusion weights.
+- Retrieval-agreement protection prevents candidates ranked Top-3 by both FAISS and BM25 from being destructively demoted below rank 3 during adaptive reranking.
+- RAG Lab adds `Adaptive fusion V4.1` and `Adaptive Full RAG V4.1` for direct A/B evaluation.
+- Existing strategies remain available for rollback.
+
+## V4.2 Legal Query Intelligence
+V4.2 keeps Adaptive V4.1 ranking intact and adds local legal-query analysis (statutes/sections/articles/courts/case names), deterministic statute-aware sparse-query enrichment, ambiguity flags for underspecified section queries, and RAG Lab failure diagnostics that distinguish candidate-retrieval failures from ranking failures. No Groq/Gemini call is used for query routing or enrichment.
+
+## V4.2.1 Legal Query Parser Hardening
+- Production adaptive retrieval is now the default (`RAG_RETRIEVAL_STRATEGY=adaptive`).
+- Normalizes Section/Sec./S./s./§ and Article/Art. citation variants.
+- Recognizes subsection-only forms such as `section (1-A)` as incomplete/ambiguous rather than silently treating them as generic text.
+- Canonical statute aliases include IPC, CrPC, NI Act, BNSS, BNS, ESI, EPF and historical Workmen's/Employees' Compensation naming.
+- Adds conservative OCR-tolerant recognition for corrupted statute names such as split/hyphenated Workmen's Compensation Act text.
+- Adaptive BM25 in RAG Lab now evaluates the same enriched query used by production adaptive retrieval.
+- Failure diagnostics distinguish `ambiguous_query`, `candidate_retrieval_failure`, `fusion_failure`, `reranking_failure`, and `final_top_k_failure`.
+- Existing legacy and improved strategies remain available for rollback/A-B testing.
+
+## V4.4 - Attribution-Aware Citation Verification
+- Adds deterministic speaker-attribution verification after passage-support verification.
+- Uses V4.3 legal-role metadata to distinguish Court reasoning/ratio/final orders from party submissions.
+- Flags `attribution.status=mismatch` when an answer says the Court held a proposition but the supporting passage is a party argument.
+- Returns `supported`, `mismatch`, or `uncertain` without converting uncertain classification into an unsupported citation.
+- Advocate Research UI displays attribution status separately from claim support and precedent history.
+
+## Unified Product-Readiness Release
+This consolidated build keeps Adaptive V4.1 retrieval stable and adds the trust/reliability layer in one package:
+- V4.3 legal-role intelligence and V4.4 attribution verification retained.
+- Explainable evidence-strength score derived from corpus existence, passage support, verifier agreement, independent cross-check and legal-role attribution. This is not a legal-validity/citator score.
+- Verification overview includes authority counts and authorities requiring review, providing groundwork for multi/contrary-authority analysis.
+- Case-brief contradiction schema supports timeline, amount, identity, event, legal-position and other conflicts with source A/source B fields.
+- `/health` now exposes runtime diagnostics, retrieval strategy, providers and indexed chunk count without consuming provider quota.
+- `smoke_test.py` provides quick local non-provider checks; it does not replace end-to-end tests with the real corpus/API keys.
+
+Quick check: `python smoke_test.py`.
+
+## Final product step: Case -> Issue -> Evidence -> Law
+Private Case Intelligence now includes an **Issue Map** workspace. After running **Analyze Case**, open **Issue Map** and choose **Build Issue Map**. LEXAI links extracted legal issues to private evidence with filename/page provenance, retrieves global judgment authorities, and separates supporting from contrary/distinguishable and related authorities. The map is cached against the private document fingerprint and becomes stale when case documents change. Authority stance is AI-assisted; later precedent treatment still requires an authoritative citator.
+
+API:
+- `GET /cases/{case_id}/issue-map`
+- `POST /cases/{case_id}/issue-map/build`
+
+## Dual-provider task-aware routing (final build)
+
+LEXAI now uses a shared provider router instead of relying on Groq for every AI task.
+
+- **Moot Court / Case Intelligence / Issue Map:** Gemini primary, Groq fallback.
+- **Short interactive generation:** Groq primary, Gemini fallback where wired through the shared router.
+- **Retrieval and RAG Lab:** remain local; no provider call is required for FAISS/BM25/Adaptive retrieval evaluation.
+- Feature-specific output budgets prevent Moot Court from requesting 1500 output tokens against a 1000-OTPM Groq tier. Default Moot Court budget is 700.
+- Provider results include provider/model, fallback status/reason, token budget and latency metadata where the feature exposes generation metadata.
+
+Configure both `GEMINI_API_KEY` and `GROQ_API_KEY` for best resilience. Either provider can keep Moot Court available if the other is unavailable. Model IDs and token budgets are configurable in `.env`.
+
+## Production persistence (Supabase)
+The Render-Free build can use persistent Supabase PostgreSQL + private Storage without deploying the 848-judgment research corpus. Run `supabase/schema.sql`, keep the `lexai-private` bucket private, set `LEXAI_STORAGE_BACKEND=supabase`, and configure the backend-only Supabase Secret/service-role key in Render. See `SUPABASE_DEPLOYMENT.md`.

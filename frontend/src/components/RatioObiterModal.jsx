@@ -1,6 +1,7 @@
+import { apiFetch } from '../lib/auth.js'
 import { useState, useEffect } from 'react'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function RatioObiterModal({ isOpen, onClose, caseName, passageText }) {
   const [loading, setLoading] = useState(false)
@@ -14,7 +15,7 @@ export default function RatioObiterModal({ isOpen, onClose, caseName, passageTex
       setError(null)
       setData(null)
 
-      fetch(`${API_BASE}/analyze/ratio-obiter`, {
+      apiFetch(`${API_BASE}/analyze/ratio-obiter`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

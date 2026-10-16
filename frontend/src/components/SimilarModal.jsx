@@ -1,7 +1,8 @@
+import { apiFetch } from '../lib/auth.js'
 import { useEffect, useState } from 'react'
 import { parseSource } from '../lib/utils.js'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 function titleOf(r) {
   // Prefer the parsed party names; fall back to a readable filename.
@@ -29,7 +30,7 @@ export default function SimilarModal({ target, onClose }) {
     const ctl = new AbortController()
     setLoading(true); setError(null); setData(null); setOpenIdx(null)
     const usePassage = basis === 'passage' && current.text
-    fetch(`${API_BASE}/similar`, {
+    apiFetch(`${API_BASE}/similar`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctl.signal,

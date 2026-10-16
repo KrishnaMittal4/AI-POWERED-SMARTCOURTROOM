@@ -9,7 +9,7 @@ Simulates an adversarial courtroom trial with 3 AI agents:
 Leverages:
 - Dual-perspective FAISS vector retrieval (Prosecution vs. Defense passages)
 - Groq (openai/gpt-oss-20b) for rapid counsel arguments
-- Gemini (models/gemini-flash-latest) with 1M TPM for comprehensive judicial analysis
+- Gemini 3.8 Flash for judicial reasoning, with truthful Groq resilience fallback
 - Graceful fallbacks so neither API downtime halts the courtroom
 """
 
@@ -22,9 +22,12 @@ from groq import Groq
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "models/gemini-flash-latest"
-PRIMARY_GROQ_MODEL = "qwen/qwen3.8-27b"
-FALLBACK_GROQ_MODEL = "openai/gpt-oss-20b"
+from llm_router import (
+    GEMINI_REASONING_MODEL as GEMINI_MODEL,
+    GROQ_PRIMARY_MODEL as PRIMARY_GROQ_MODEL,
+    GROQ_FALLBACK_MODEL as FALLBACK_GROQ_MODEL,
+    gemini_then_groq, route_task, gemini_configured,
+)
 
 
 def _format_passages(sources: list) -> str:
@@ -61,53 +64,35 @@ def _retrieve_for_perspective(query: str, index, records, embed_model, top_k: in
         return []
 
 
-def _call_groq(client: Groq, prompt: str, system_prompt: str, max_tokens: int = 1500) -> tuple[str, str]:
-    """Call Groq with automatic model fallback to guarantee non-empty courtroom argument."""
-    # Try primary non-reasoning fast model first
-    for model_name in [PRIMARY_GROQ_MODEL, FALLBACK_GROQ_MODEL]:
-        try:
-            tokens_to_use = 2500 if "gpt-oss" in model_name else max_tokens
-            resp = client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
-                max_tokens=tokens_to_use,
-            )
-            content = (resp.choices[0].message.content or "").strip()
-            if content:
-                return content, model_name
-        except Exception as e:
-            logger.warning(f"Groq model {model_name} failed: {e}")
-            continue
-
-    return "Oral submission placed on record based on the written brief.", PRIMARY_GROQ_MODEL
+def _call_groq(client: Groq, prompt: str, system_prompt: str, max_tokens: int = 700) -> tuple[str, str]:
+    """Moot Court generation: Gemini primary, Groq fallback with a safe output budget."""
+    result = route_task(
+        "moot", prompt, groq_client=client, system_prompt=system_prompt,
+        purpose="reason", max_tokens=min(max_tokens, 700), temperature=0.2,
+    )
+    if result.get("ok"):
+        label = f"{str(result.get('provider','ai')).title()} ({result.get('model','configured model')})"
+        if result.get("fallback_used"):
+            label += " [fallback]"
+        return result.get("text", ""), label
+    logger.warning("Moot Court providers unavailable: %s", result.get("error"))
+    return "Oral submission placed on record based on the written brief.", "Provider unavailable"
 
 
-def _call_gemini_or_fallback(prompt: str, system_prompt: str, groq_client: Optional[Groq] = None) -> str:
-    """Call Gemini for the Presiding Judge, falling back to Groq if needed."""
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if gemini_key:
-        try:
-            from google import genai
-            client = genai.Client(api_key=gemini_key)
-            combined = f"{system_prompt}\n\n---\n\n{prompt}"
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=combined,
-            )
-            if response.text and response.text.strip():
-                return response.text.strip()
-        except Exception as e:
-            logger.warning(f"Gemini call failed in Moot Court ({e}); falling back to Groq.")
-
-    # Fallback to Groq
-    if groq_client:
-        content, _ = _call_groq(groq_client, prompt, system_prompt, max_tokens=2000)
-        return content
-    raise RuntimeError("No LLM client available for Presiding Judge.")
+def _call_gemini_or_fallback(prompt: str, system_prompt: str, groq_client: Optional[Groq] = None) -> tuple[str, dict]:
+    result = route_task(
+        "moot", prompt, groq_client=groq_client, system_prompt=system_prompt,
+        purpose="reason", max_tokens=700, temperature=0.2,
+    )
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "No LLM available for Presiding Judge."))
+    meta = {
+        "provider": result.get("provider"), "model": result.get("model"),
+        "fallback_reason": result.get("fallback_reason"),
+        "resilience_fallback": result.get("fallback_used", False),
+        "token_budget": result.get("token_budget"), "latency_ms": result.get("latency_ms"),
+    }
+    return result.get("text", ""), meta
 
 
 def run_moot_court_debate(
@@ -120,8 +105,8 @@ def run_moot_court_debate(
     """
     Executes a 3-stage adversarial debate on the given legal dispute / facts.
     """
-    if not groq_client:
-        raise ValueError("Groq client is required for Moot Court.")
+    if not groq_client and not gemini_configured():
+        raise ValueError("Configure GEMINI_API_KEY or GROQ_API_KEY for Moot Court.")
 
     # 1. Dual Retrieval from FAISS (0 LLM cost)
     petitioner_passages = _retrieve_for_perspective(
@@ -214,7 +199,7 @@ Respondent authorities:
 
 Deliver the official reasoned Judicial Order of the Bench:"""
 
-    judge_verdict = _call_gemini_or_fallback(judge_prompt, judge_system, groq_client=groq_client)
+    judge_verdict, judge_meta = _call_gemini_or_fallback(judge_prompt, judge_system, groq_client=groq_client)
 
     # Determine winning side & disposition summary
     disposition = "Disposed with Directions"
@@ -232,19 +217,21 @@ Deliver the official reasoned Judicial Order of the Bench:"""
         "dispute": dispute,
         "petitioner": {
             "counsel": "Senior Counsel for Petitioner",
-            "model": f"Groq ({pet_model})",
+            "model": pet_model,
             "argument": petitioner_argument,
             "citations": petitioner_passages,
         },
         "respondent": {
             "counsel": "Senior Counsel for Respondent",
-            "model": f"Groq ({resp_model})",
+            "model": resp_model,
             "argument": respondent_argument,
             "citations": respondent_passages,
         },
         "bench": {
             "bench_title": "Division Bench / High Court",
-            "model": f"Gemini ({GEMINI_MODEL})" if os.getenv("GEMINI_API_KEY") else f"Groq ({PRIMARY_GROQ_MODEL})",
+            "model": f"{judge_meta['provider'].title()} ({judge_meta['model']})",
+            "provider": judge_meta["provider"],
+            "fallback_reason": judge_meta.get("fallback_reason"),
             "verdict": judge_verdict,
             "disposition": disposition,
             "prevailing_party": winner,
@@ -261,8 +248,8 @@ def answer_interlocutory_query(
     groq_client: Groq = None,
 ) -> dict:
     """Answers an interactive question posed from the Bench to a specific Counsel."""
-    if not groq_client:
-        raise ValueError("Groq client is required.")
+    if not groq_client and not gemini_configured():
+        raise ValueError("Configure GEMINI_API_KEY or GROQ_API_KEY.")
 
     is_petitioner = target_counsel.lower() == "petitioner"
     counsel_title = "Senior Counsel for Petitioner" if is_petitioner else "Senior Counsel for Respondent"
@@ -297,7 +284,7 @@ Deliver your immediate oral response to the Bench:"""
         "counsel_title": counsel_title,
         "judge_question": judge_question,
         "response": response_text,
-        "model": f"Groq ({model_used})",
+        "model": model_used,
     }
 
 
@@ -317,8 +304,8 @@ def reply_human_counsel(
     Returns the AI opponent's counter-rebuttal and a brief bench interjection.
     prior_exchange: list of {'role': 'human'|'ai', 'text': str} for context.
     """
-    if not groq_client:
-        raise ValueError("Groq client is required.")
+    if not groq_client and not gemini_configured():
+        raise ValueError("Configure GEMINI_API_KEY or GROQ_API_KEY.")
 
     user_is_petitioner = user_role.lower() == "petitioner"
     opp_role_name = "Respondent" if user_is_petitioner else "Petitioner"
@@ -385,16 +372,18 @@ OPPOSING COUNSEL'S COUNTER-REBUTTAL:
 
 Deliver your brief judicial interjection:"""
 
-    bench_observation = _call_gemini_or_fallback(bench_prompt, bench_system, groq_client=groq_client)
+    bench_observation, bench_meta = _call_gemini_or_fallback(bench_prompt, bench_system, groq_client=groq_client)
 
     return {
         "round": round_number,
         "user_role": user_role_name.lower(),
         "human_reply": user_reply,
         "opponent_rebuttal": opponent_reply,
-        "opponent_model": f"Groq ({opp_model})",
+        "opponent_model": opp_model,
         "bench_observation": bench_observation,
-        "bench_model": f"Gemini ({GEMINI_MODEL})" if os.getenv("GEMINI_API_KEY") else f"Groq ({PRIMARY_GROQ_MODEL})",
+        "bench_model": f"{bench_meta['provider'].title()} ({bench_meta['model']})",
+        "bench_provider": bench_meta["provider"],
+        "bench_fallback_reason": bench_meta.get("fallback_reason"),
     }
 
 
@@ -414,8 +403,8 @@ def run_human_counsel_debate(
     3. Presiding Bench evaluates both sides, pronounces judicial verdict,
        and delivers an Advocacy Scorecard with constructive critique.
     """
-    if not groq_client:
-        raise ValueError("Groq client is required for Moot Court.")
+    if not groq_client and not gemini_configured():
+        raise ValueError("Configure GEMINI_API_KEY or GROQ_API_KEY for Moot Court.")
 
     user_is_petitioner = user_role.lower() == "petitioner"
     opp_role_name = "Respondent" if user_is_petitioner else "Petitioner"
@@ -523,7 +512,7 @@ AUTHORITIES CITED ON RECORD:
 
 Evaluate both submissions, generate the Scorecard JSON, and pronounce the Judicial Order:"""
 
-    raw_bench = _call_gemini_or_fallback(bench_prompt, bench_system, groq_client=groq_client)
+    raw_bench, bench_meta = _call_gemini_or_fallback(bench_prompt, bench_system, groq_client=groq_client)
 
     # 4. Parse Scorecard JSON & Judicial Order
     scorecard = {
@@ -564,7 +553,7 @@ Evaluate both submissions, generate the Scorecard JSON, and pronounce the Judici
     petitioner_data = {
         "counsel": "Senior Counsel for Petitioner" + (" (You · Human Advocate)" if user_is_petitioner else " (AI Opponent)"),
         "is_human": user_is_petitioner,
-        "model": "Human Advocate" if user_is_petitioner else f"Groq ({opp_model})",
+        "model": "Human Advocate" if user_is_petitioner else opp_model,
         "argument": user_argument if user_is_petitioner else opponent_argument,
         "citations": [] if user_is_petitioner else opp_passages,
     }
@@ -572,7 +561,7 @@ Evaluate both submissions, generate the Scorecard JSON, and pronounce the Judici
     respondent_data = {
         "counsel": "Senior Counsel for Respondent" + (" (You · Human Advocate)" if not user_is_petitioner else " (AI Opponent)"),
         "is_human": not user_is_petitioner,
-        "model": "Human Advocate" if not user_is_petitioner else f"Groq ({opp_model})",
+        "model": "Human Advocate" if not user_is_petitioner else opp_model,
         "argument": user_argument if not user_is_petitioner else opponent_argument,
         "citations": [] if not user_is_petitioner else opp_passages,
     }
@@ -585,7 +574,9 @@ Evaluate both submissions, generate the Scorecard JSON, and pronounce the Judici
         "respondent": respondent_data,
         "bench": {
             "bench_title": "Division Bench / High Court",
-            "model": f"Gemini ({GEMINI_MODEL})" if os.getenv("GEMINI_API_KEY") else f"Groq ({PRIMARY_GROQ_MODEL})",
+            "model": f"{bench_meta['provider'].title()} ({bench_meta['model']})",
+            "provider": bench_meta["provider"],
+            "fallback_reason": bench_meta.get("fallback_reason"),
             "verdict": judicial_order,
             "disposition": disposition,
             "prevailing_party": winner,

@@ -1,37 +1,66 @@
-# Python
+# Secrets / local configuration
 .env
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
+.env.*
+!.env.example
+*.pem
+*.key
 
-# Large data / model artifacts — NOT committed; hosted on Render persistent disk
-# or reproduced locally by running rag_pipeline.py
+# Research-only global judgment corpus and indexes (NEVER deploy/commit)
 judgments/
-data/
+corpus/
+data/judgments/
 index_store/
 index_store_backup_*/
-# Small deploy index that Render loads (see INDEX_DIR in render.yaml). Commit it:
-!index_store_backup_20261005_152032/
-scratch/
+faiss_index/
+bm25_index/
+benchmarks/
+benchmark_data/
+lexai-rag-results*.json
+lexai-rag-results*.csv
+*rag-benchmark*.json
+*rag-benchmark*.csv
 
-# Evaluation results / logs
-*.json
-# ...but the frontend needs its manifest/config to build on Vercel:
-!frontend/package.json
-!frontend/package-lock.json
-!frontend/vercel.json
-feedback.db
+# Private runtime data (must live on persistent storage in production)
+runtime_data/
+user_case_files/
+user_case_indexes/
+uploads/
+private_cases/
+*.db
+*.db-shm
+*.db-wal
 
-# Frontend build artifacts
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 
-# OS / editor
+# Logs / temp
+*.log
+scratch/
+tmp/
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# Supabase local CLI state / credentials
+.supabase/
+supabase/.temp/
+
+# Never commit production secrets
+*.pem
+*.key

@@ -1,146 +1,73 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
-export default function VoiceInput({ onTranscript, disabled = false, className = '' }) {
-  const [supported, setSupported] = useState(false)
+export default function VoiceInput({ value = '', onTranscript, disabled = false, className = '' }) {
+  const [supported, setSupported] = useState(true)
   const [listening, setListening] = useState(false)
-  const [lang, setLang] = useState('en-IN') // 'en-IN' or 'hi-IN'
+  const [lang, setLang] = useState('en-IN')
   const [statusText, setStatusText] = useState('')
   const recognitionRef = useRef(null)
+  const baseRef = useRef('')
+  const finalRef = useRef('')
+  const callbackRef = useRef(onTranscript)
+  callbackRef.current = onTranscript
 
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      setSupported(true)
-      const recognition = new SpeechRecognition()
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = lang
+    if (!SpeechRecognition) { setSupported(false); return }
+    setSupported(true)
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.maxAlternatives = 1
+    recognition.lang = lang
 
-      recognition.onstart = () => {
-        setListening(true)
-        setStatusText(lang === 'hi-IN' ? 'सुन रहा हूँ... बोलिए' : 'Listening... Speak now')
+    recognition.onstart = () => { setListening(true); setStatusText(lang === 'hi-IN' ? 'सुन रहा है…' : 'Listening…') }
+    recognition.onresult = (event) => {
+      let interim = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const text = event.results[i][0]?.transcript || ''
+        if (event.results[i].isFinal) finalRef.current += `${text} `
+        else interim += text
       }
-
-      recognition.onresult = (event) => {
-        let finalTranscript = ''
-        let interimTranscript = ''
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          const item = event.results[i]
-          if (item.isFinal) {
-            finalTranscript += item[0].transcript
-          } else {
-            interimTranscript += item[0].transcript
-          }
-        }
-
-        const transcript = (finalTranscript || interimTranscript).trim()
-        if (transcript) {
-          onTranscript(transcript, Boolean(finalTranscript))
-        }
-      }
-
-      recognition.onerror = (event) => {
-        if (event.error === 'not-allowed') {
-          setStatusText('Microphone permission blocked')
-        } else if (event.error === 'no-speech') {
-          // keep waiting
-        } else {
-          setStatusText(`Mic error: ${event.error}`)
-        }
-        setListening(false)
-      }
-
-      recognition.onend = () => {
-        setListening(false)
-        setStatusText('')
-      }
-
-      recognitionRef.current = recognition
-    } else {
-      setSupported(false)
+      const dictated = `${finalRef.current}${interim}`.trim()
+      const combined = [baseRef.current.trim(), dictated].filter(Boolean).join(' ')
+      callbackRef.current?.(combined, !interim)
     }
-
-    return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort() } catch (_) {}
-      }
+    recognition.onerror = (event) => {
+      const messages = { 'not-allowed':'Microphone permission blocked', 'audio-capture':'No microphone detected', 'network':'Speech service unavailable', 'no-speech':'No speech detected' }
+      setStatusText(messages[event.error] || `Microphone error: ${event.error}`)
+      if (event.error !== 'no-speech') setListening(false)
     }
-  }, [lang, onTranscript])
+    recognition.onend = () => setListening(false)
+    recognitionRef.current = recognition
+    return () => { try { recognition.abort() } catch {} }
+  }, [lang])
 
-  const toggleListen = () => {
-    if (!recognitionRef.current) return
-
-    if (listening) {
-      recognitionRef.current.stop()
-      setListening(false)
-      setStatusText('')
-    } else {
-      try {
-        recognitionRef.current.lang = lang
-        recognitionRef.current.start()
-      } catch (err) {
-        console.warn('Speech recognition error:', err)
-      }
-    }
+  function toggleListen() {
+    const r = recognitionRef.current
+    if (!r) return
+    if (listening) { r.stop(); return }
+    baseRef.current = value || ''
+    finalRef.current = ''
+    setStatusText('')
+    try { r.lang = lang; r.start() } catch { setStatusText('Microphone is already starting. Try again.') }
   }
 
-  if (!supported) return null
+  function switchLanguage(next) {
+    if (listening) { try { recognitionRef.current?.stop() } catch {} }
+    setLang(next); setStatusText('')
+  }
 
   return (
     <div className={`voice-input-container ${className}`}>
-      {listening && (
-        <div className="voice-listening-indicator" title="Microphone active">
-          <span className="voice-pulse-ring" />
-          <span className="voice-wave-bar bar-1" />
-          <span className="voice-wave-bar bar-2" />
-          <span className="voice-wave-bar bar-3" />
-          <span className="voice-wave-bar bar-4" />
-          <span className="voice-status-text">{statusText}</span>
-        </div>
-      )}
-
-      {/* Language Selector Pill */}
-      <div className="voice-lang-selector" title="Select speech recognition language">
-        <button
-          type="button"
-          className={`voice-lang-pill ${lang === 'en-IN' ? 'active' : ''}`}
-          onClick={() => {
-            if (listening) recognitionRef.current?.stop()
-            setLang('en-IN')
-          }}
-          disabled={disabled}
-        >
-          EN
-        </button>
-        <button
-          type="button"
-          className={`voice-lang-pill ${lang === 'hi-IN' ? 'active' : ''}`}
-          onClick={() => {
-            if (listening) recognitionRef.current?.stop()
-            setLang('hi-IN')
-          }}
-          disabled={disabled}
-        >
-          हिन्दी
-        </button>
+      <div className="voice-lang-selector" title="Speech language">
+        <button type="button" className={`voice-lang-pill ${lang === 'en-IN' ? 'active' : ''}`} onClick={() => switchLanguage('en-IN')} disabled={disabled}>EN</button>
+        <button type="button" className={`voice-lang-pill ${lang === 'hi-IN' ? 'active' : ''}`} onClick={() => switchLanguage('hi-IN')} disabled={disabled}>हिन्दी</button>
       </div>
-
-      {/* Mic Button */}
-      <button
-        type="button"
-        className={`voice-mic-btn ${listening ? 'listening' : ''}`}
-        onClick={toggleListen}
-        disabled={disabled}
-        title={listening ? 'Stop recording voice' : `Speak in ${lang === 'hi-IN' ? 'Hindi' : 'English / Hinglish'}`}
-        aria-label="Voice input speech to text"
-      >
-        {listening ? (
-          <span className="mic-icon-active">🔴</span>
-        ) : (
-          <span className="mic-icon-idle">🎙️</span>
-        )}
+      <button type="button" className={`voice-mic-btn ${listening ? 'listening' : ''}`} onClick={toggleListen} disabled={disabled || !supported} title={!supported ? 'Browser speech recognition is not supported. Use Chrome or Edge.' : listening ? 'Stop dictation' : `Dictate in ${lang === 'hi-IN' ? 'Hindi' : 'English'}`} aria-label="Voice input">
+        {listening ? '■' : '🎙️'}
       </button>
+      {(listening || statusText || !supported) && <span className={`voice-inline-status ${!supported ? 'error' : ''}`}>{!supported ? 'Voice input requires Chrome/Edge' : statusText}</span>}
     </div>
   )
 }
