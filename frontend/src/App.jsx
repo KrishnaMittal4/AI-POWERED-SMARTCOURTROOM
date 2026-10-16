@@ -87,8 +87,11 @@ export default function App({ user, onLogout }) {
   const [mootOpen, setMootOpen] = useState(false)
   const [casesOpen, setCasesOpen] = useState(false)
   const [mootQuery, setMootQuery] = useState('')
+  const [quickPdfUploading, setQuickPdfUploading] = useState(false)
+  const [initialCaseTab, setInitialCaseTab] = useState('overview')
   const inputRef = useRef(null)
   const fileInputRef = useRef(null)
+  const quickPdfInputRef = useRef(null)
   const streamControllerRef = useRef(null)
 
   // Streaming state
@@ -135,6 +138,63 @@ export default function App({ user, onLogout }) {
     if (activeCaseId===caseId) setActiveCaseId('')
     await refreshCases()
     setUploadStatus({type:'success',msg:'Case and its private workspace data were permanently deleted.'})
+  }
+
+  async function handleQuickPdfUpload(e) {
+    const file = e.target?.files?.[0]
+    if (!file) return
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Please select a valid PDF case document.')
+      return
+    }
+    setQuickPdfUploading(true)
+    setError(null)
+    setAnnounce('Uploading and indexing case PDF…')
+    try {
+      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim()
+      const title = cleanName ? `Matter: ${cleanName.slice(0, 40)}` : 'Private Legal Matter'
+
+      // 1. Create new case workspace for this document
+      const rCase = await apiFetch(`${API_BASE}/cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          description: `Imported from ${file.name} · Ready for citation verification & questions`
+        })
+      })
+      const dCase = await rCase.json().catch(() => ({}))
+      if (!rCase.ok) throw new Error(dCase.detail || 'Could not create workspace for this PDF.')
+
+      const newCaseId = dCase.case.id
+
+      // 2. Upload and index document
+      const formData = new FormData()
+      formData.append('files', file)
+      const rDoc = await apiFetch(`${API_BASE}/cases/${newCaseId}/documents`, {
+        method: 'POST',
+        body: formData
+      })
+      const dDoc = await rDoc.json().catch(() => ({}))
+      if (!rDoc.ok) throw new Error(dDoc.detail || 'Failed to upload and index document.')
+
+      // 3. Refresh and open directly into "Ask LEXAI"
+      await refreshCases()
+      setInitialCaseTab('ask')
+      setActiveCaseId(newCaseId)
+      setCasesOpen(false)
+      setUploadStatus({
+        type: 'success',
+        msg: `"${file.name}" uploaded and indexed! Ask any question below to verify citations.`
+      })
+      setAnnounce('Case PDF uploaded and indexed.')
+    } catch (err) {
+      setError(err.message || 'Could not upload PDF.')
+      setAnnounce('Upload failed.')
+    } finally {
+      setQuickPdfUploading(false)
+      if (e.target) e.target.value = ''
+    }
   }
 
   // move focus to the answer heading after a new answer arrives
@@ -568,7 +628,15 @@ export default function App({ user, onLogout }) {
             <CasesDashboard cases={cases} onCreate={makeCase} onDelete={deleteCaseById} onOpen={(id)=>{setActiveCaseId(id);setCasesOpen(false)}} />
           )}
           {!loading && !citizenLoading && !entry && !citizenResult && !error && activeCase && !casesOpen && (
-            <CaseWorkspace activeCase={activeCase} capabilities={health.capabilities||{}} onCaseChanged={refreshCases} onBack={()=>{setActiveCaseId('');setCasesOpen(true)}} onDeleteCase={()=>deleteCaseById(activeCase.id)} />
+            <CaseWorkspace
+              activeCase={activeCase}
+              capabilities={health.capabilities||{}}
+              onCaseChanged={refreshCases}
+              onBack={()=>{setActiveCaseId('');setCasesOpen(true);setInitialCaseTab('overview')}}
+              onDeleteCase={()=>deleteCaseById(activeCase.id)}
+              initialTab={initialCaseTab}
+              initialQuestion={question}
+            />
           )}
 
           {!loading && !citizenLoading && !entry && !citizenResult && !error && !activeCase && !casesOpen && (
@@ -629,6 +697,23 @@ export default function App({ user, onLogout }) {
 
               {appMode === 'research' && (
                 <div className="advocate-tool-strip" aria-label="Advocate tools">
+                  <input
+                    ref={quickPdfInputRef}
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    style={{ display: 'none' }}
+                    onChange={handleQuickPdfUpload}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => quickPdfInputRef.current?.click()}
+                    disabled={quickPdfUploading}
+                    className="quick-upload-card"
+                  >
+                    <span>📄</span>
+                    <b>{quickPdfUploading ? 'Indexing PDF…' : 'Upload Case PDF'}</b>
+                    <small>Upload PDF, ask questions & verify citations</small>
+                  </button>
                   {globalCorpusAvailable && <button type="button" onClick={openJudgmentUpload} disabled={uploading}><span>📁</span><b>{uploading ? 'Indexing PDFs…' : 'Upload Judgments'}</b><small>Add judgments to the research corpus</small></button>}
                   <button type="button" onClick={() => setCasesOpen(true)}><span>🗂️</span><b>My Cases</b><small>Open private case workspaces</small></button>
                   <button type="button" onClick={() => { setMootQuery(question || ''); setMootOpen(true) }}><span>⚖️</span><b>Moot Court</b><small>Simulate arguments before an AI bench</small></button>
@@ -659,6 +744,29 @@ export default function App({ user, onLogout }) {
                   <div className="hero-chat-footer">
                     <span className="hero-chat-hint">Press Enter to ask · Shift+Enter for new line</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <button
+                        type="button"
+                        className="hero-attach-pdf-btn"
+                        onClick={() => quickPdfInputRef.current?.click()}
+                        disabled={quickPdfUploading}
+                        title="Upload a PDF case file to ask questions and verify citations"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          border: '1px solid var(--rule)',
+                          background: 'color-mix(in srgb, var(--gold) 10%, transparent)',
+                          color: 'var(--gold)',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease'
+                        }}
+                      >
+                        <span>📎</span> {quickPdfUploading ? 'Indexing PDF…' : 'Attach PDF'}
+                      </button>
                       <VoiceInput
                         value={question}
                         onTranscript={(text) => setQuestion(text)}
