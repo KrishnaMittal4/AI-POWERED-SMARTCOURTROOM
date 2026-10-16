@@ -143,27 +143,39 @@ app = FastAPI(title="Legal RAG API", lifespan=lifespan)
 
 # Allow the React dev server (Vite default port 5173) to call this API
 # from the browser during local development.
-_cors_env = os.getenv("CORS_ORIGINS", "")
-_cors_origins = (
-    [o.strip() for o in _cors_env.split(",") if o.strip()]
-    if _cors_env
-    else [
-        "http://localhost:5173", "http://127.0.0.1:5173",
-        "http://localhost:5174", "http://127.0.0.1:5174",
-        "http://localhost:5175", "http://127.0.0.1:5175",
-    ]
-)
+_cors_env = os.getenv("CORS_ORIGINS", "").strip()
 
-# If CORS_ORIGINS is set (production), ONLY those origins are allowed. The
-# *.vercel.app wildcard is kept for first-time setup / local use when it is
-# not set -- any Vercel app could otherwise call your API from a browser.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_origin_regex=None if _cors_env else r"https://.*\.vercel\.app",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Handle wildcard "*" explicitly — Starlette requires allow_all_origins=True
+# for a true wildcard, not allow_origins=["*"]
+if _cors_env == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+elif _cors_env:
+    _cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_origin_regex=None,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    # Development / first-time setup: allow localhost + any *.vercel.app
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:5173", "http://127.0.0.1:5173",
+            "http://localhost:5174", "http://127.0.0.1:5174",
+            "http://localhost:5175", "http://127.0.0.1:5175",
+        ],
+        allow_origin_regex=r"https://.*\.vercel\.app",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 
@@ -1073,7 +1085,7 @@ def case_note_delete(case_id: str, note_id: str, user: dict = Depends(current_us
 
 @app.post('/cases/{case_id}/argument')
 def case_argument(case_id: str, req: ArgumentRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_argument', 'CASE_ARGUMENT_PER_MIN', 'CASE_ARGUMENT_PER_DAY', 6, 80, use_global=False))):
-    return build_argument(user['id'],case_id,req.side,req.issue,state['groq_client'],state['embed_model'],state['reranker'],state['index'],state['records'])
+    return build_argument(user['id'],case_id,req.side,req.issue,state['groq_client'],state['embed_model'],state.get('reranker'),state.get('index'),state.get('records') or [])
 
 @app.post('/cases/{case_id}/brief')
 def case_brief(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_brief', 'CASE_BRIEF_PER_MIN', 'CASE_BRIEF_PER_DAY', 4, 40, use_global=False))):
@@ -1084,9 +1096,14 @@ class CaseMootRequest(BaseModel):
 
 @app.post('/cases/{case_id}/moot-court')
 def case_moot(case_id: str, req: CaseMootRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_moot', 'CASE_MOOT_PER_MIN', 'CASE_MOOT_PER_DAY', 3, 30, use_global=False))):
-    grounded=ask_case(user['id'],case_id,req.issue,'both',5,True,state['embed_model'],state['reranker'],state['groq_client'],state['index'],state['records'])
+    # In Render free-mode the global FAISS index is None; use 'case' mode only to avoid 503.
+    _mode = 'both' if state.get('index') is not None else 'case'
+    grounded=ask_case(user['id'],case_id,req.issue,_mode,5,True,state['embed_model'],state['reranker'],state['groq_client'],state.get('index'),state.get('records') or [])
     context='\n'.join(f"- {s.get('scope')}: {s.get('source_file')} p.{s.get('page') or '-'}: {s.get('text','')[:450]}" for s in grounded.get('sources',[]))
     dispute=f"{req.issue}\n\nCASE-SPECIFIC VERIFIED RETRIEVAL CONTEXT:\n{context}"
+    # Global moot court debate requires the corpus; skip if unavailable and return case-grounded summary only.
+    if state.get('index') is None:
+        return {'petitioner_argument': grounded.get('answer',''), 'respondent_argument': '', 'bench_questions': [], 'bench_verdict': 'Global corpus not available in this deployment. Case-grounded analysis returned above.', 'case_sources': grounded.get('sources', [])}
     result=run_moot_court_debate(dispute,state['index'],state['records'],state['embed_model'],state['groq_client'])
     result['case_sources']=grounded.get('sources',[]); return result
 

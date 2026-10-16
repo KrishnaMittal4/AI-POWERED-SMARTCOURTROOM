@@ -394,14 +394,15 @@ export default function App({ user, onLogout }) {
   }, [verify])
 
   const run = useCallback((q, k, wider = false) => {
-    // General AI deliberately bypasses retrieval, so it uses the non-streaming
-    // general endpoint. Judgment/Both modes preserve the full hybrid RAG flow.
-    if (researchSource !== 'general' && useStreaming && !wider) {
+    // Only stream when: streaming is ON, not a wider search, global corpus is available, AND there is no active case PDF.
+    // With no global corpus (Render free mode) or an active case PDF, always use runClassic which routes correctly.
+    const canStream = useStreaming && !wider && globalCorpusAvailable && !activeCaseId && researchSource !== 'general'
+    if (canStream) {
       runStream(q, k)
     } else {
       runClassic(q, k, wider)
     }
-  }, [useStreaming, runStream, runClassic, researchSource])
+  }, [useStreaming, runStream, runClassic, researchSource, globalCorpusAvailable, activeCaseId])
 
   async function runCitizenAdvice(incidentText) {
     setCitizenLoading(true)
