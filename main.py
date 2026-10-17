@@ -58,6 +58,7 @@ from case_engine import init_case_engine_db, get_intelligence, analyze_once, sec
 from case_law_mapping import init_issue_map_db, get_issue_map, build_issue_map
 from rag_evaluation import inspect_query, evaluate as evaluate_retrieval, generate_benchmark, generate_realistic_benchmark
 from benchmark_runner import start as start_benchmark_job, get as get_benchmark_job, cancel as cancel_benchmark_job, result as benchmark_job_result
+from case_analysis_jobs import start as start_case_analysis_job, get as get_case_analysis_job
 import supabase_repository as supabase_repo
 
 
@@ -182,7 +183,7 @@ else:
 @app.middleware("http")
 async def require_signed_in_user(request: Request, call_next):
     path = request.url.path
-    public = path == "/health" or path.startswith("/auth/") or path in {"/docs", "/openapi.json", "/redoc"}
+    public = path in {"/", "/health", "/docs", "/openapi.json", "/redoc"} or path.startswith("/auth/")
     if not public and request.method != "OPTIONS":
         try:
             current_user(request)
@@ -305,9 +306,24 @@ async def case_query(case_id: str, req: CaseQueryRequest, user: dict = Depends(c
 def case_intelligence_get(case_id: str, user: dict = Depends(current_user)):
     return get_intelligence(user["id"], case_id)
 
-@app.post("/cases/{case_id}/intelligence/analyze")
-async def case_intelligence_analyze(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_intelligence", "CASE_INTELLIGENCE_PER_MIN", "CASE_INTELLIGENCE_PER_DAY", 2, 20, use_global=False))):
-    return await run_in_threadpool(analyze_once, user["id"], case_id, state["groq_client"], state.get("embed_model"), state.get("reranker"))
+@app.post("/cases/{case_id}/intelligence/analyze", status_code=202)
+def case_intelligence_analyze(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_intelligence", "CASE_INTELLIGENCE_PER_MIN", "CASE_INTELLIGENCE_PER_DAY", 2, 20, use_global=False))):
+    # Validate ownership before returning a job id. The existing saved analysis is
+    # intentionally preserved until the replacement analysis completes successfully.
+    from case_workspace import assert_case
+    assert_case(user["id"], case_id)
+    logger.info("[CASE-INTEL] request received case=%s", case_id)
+    return start_case_analysis_job(
+        user["id"], case_id,
+        lambda progress: analyze_once(user["id"], case_id, state["groq_client"], state.get("embed_model"), state.get("reranker"), progress=progress),
+    )
+
+@app.get("/cases/{case_id}/intelligence/status/{job_id}")
+def case_intelligence_status(case_id: str, job_id: str, user: dict = Depends(current_user)):
+    job = get_case_analysis_job(user["id"], case_id, job_id)
+    if not job:
+        raise HTTPException(404, "Analysis job not found.")
+    return job
 
 @app.post("/cases/{case_id}/analysis/{kind}")
 def case_analysis(case_id: str, kind: str, user: dict = Depends(current_user)):
@@ -345,6 +361,11 @@ class QueryResponse(BaseModel):
     threshold: float | None = None  # MIN_RETRIEVAL_SCORE in force
     weak_match: bool = False     # answered, but best score was below WEAK_RETRIEVAL_SCORE
     rewritten_query: str | None = None  # the LLM-rewritten search query (if different from original)
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+def root_status():
+    return {"service": "LEXAI API", "status": "ok", "environment": LEXAI_ENV}
 
 
 @app.get("/health")

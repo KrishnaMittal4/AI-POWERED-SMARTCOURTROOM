@@ -467,6 +467,7 @@ export default function App({ user, onLogout }) {
   const isStreaming = streamingId && streamingId === activeId
 
   async function openJudgmentUpload() {
+    if (!globalCorpusAvailable) return
     setUploadStatus(null)
     setReplaceExisting(false)
     setUploadFiles([])

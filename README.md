@@ -283,3 +283,6 @@ The Render-Free build can use persistent Supabase PostgreSQL + private Storage w
 
 ## Private Evidence Verification
 Private Case Q&A now verifies generated claims against retrieved uploaded-document passages. It reports source filename/page, case-document role, allegation/testimony/direct-evidence attribution, multi-document corroboration, conservative contradiction signals, and evidence strength. Judgment Q&A retains the existing judgment citation/attribution verification policy. Production can run with the global 848-judgment corpus disabled; private evidence verification remains available.
+
+## Production Case Intelligence reliability
+Analyze Case uses a short 202 job-start request plus status polling. Existing cached analysis is preserved until a replacement analysis completes. The public `/` and `/health` endpoints are safe for Render probes, and production UI avoids global `/documents` when the research corpus is disabled.

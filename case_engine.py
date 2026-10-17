@@ -268,18 +268,26 @@ def _structured_repair_fallback(raw, schema, client, failed_provider):
         return None, {**result,'parse_error':str(exc)}
 
 
-def analyze_once(user_id,case_id,client,embed,reranker):
+def analyze_once(user_id,case_id,client,embed,reranker,progress=None):
     from private_case_rag import _ensure_embed_model
+    progress = progress or (lambda stage, message=None: None)
+    def step(stage, message):
+        print(f"[CASE-INTEL] {stage}: {message}")
+        progress(stage, message)
+    step('preparing_documents','Preparing private case documents')
     embed=_ensure_embed_model(embed)
     assert_case(user_id,case_id)
     if not list_documents(user_id,case_id): raise HTTPException(400,'Upload at least one private case PDF first.')
+    step('retrieving_context','Selecting source-grounded case excerpts')
     context=_compact_context(user_id,case_id,embed,reranker,int(os.getenv('CASE_INTELLIGENCE_MAX_CHARS','10000')))
     if not context: raise HTTPException(400,'No extractable case text was found.')
     schema='{"summary":"","parties":[{"name":"","role":"","source_file":"","page":null}],"important_facts":[{"fact":"","source_file":"","page":null}],"legal_issues":[{"issue":"","basis":"","source_file":"","page":null}],"timeline":[{"date":"","time":null,"event":"","source_file":"","page":null}],"evidence":[{"label":"","type":"testimonial|digital|documentary|forensic|physical|other","summary":"","supports":"prosecution|defence|neutral|unknown","source_file":"","page":null,"caveat":""}],"claims":[{"topic":"","claim":"","source_file":"","page":null}],"contradictions":[{"issue":"","statement_a":"","source_a":"","page_a":null,"statement_b":"","source_b":"","page_b":null,"severity":"low|medium|high","explanation":""}],"statutes":[{"provision":"","context":"","source_file":"","page":null}],"unresolved_questions":[]}'
     prompt=("You are LEXAI Case Intelligence. Analyze ONLY supplied source-grounded excerpts. Do not invent facts, dates, parties, statutes, evidence or citations. If information is absent, use an empty array or add an unresolved question. Only mark a contradiction when supplied sources genuinely conflict. Keep values concise so the JSON completes within the output budget. Return ONE valid JSON object only. Do not use markdown fences or prose. Schema:\n"+schema+"\n\nCASE EXCERPTS:\n"+context)
+    step('generating_analysis','Generating structured Case Intelligence')
     result=route_task('case_intelligence', prompt, purpose='extract', groq_client=client, temperature=.1, max_tokens=int(os.getenv('TOKENS_CASE_INTELLIGENCE','1400')))
     if not result.get('ok'):
         raise HTTPException(502, detail={'code':'provider_unavailable','message':'Case Intelligence providers are temporarily unavailable. Private Q&A and evidence verification remain available.','retryable':True})
+    step('normalizing','Validating and normalizing structured analysis')
     raw=result.get('text',''); warnings=[]
     try:
         data,locally_repaired=_parse_structured(raw); data=_normalize_intelligence(data)
@@ -308,11 +316,13 @@ def analyze_once(user_id,case_id,client,embed,reranker):
             data['_incomplete_structured_analysis']=True
 
     data['_generation']={'provider':result.get('provider'),'model':result.get('model'),'fallback_used':bool(result.get('fallback_used') or result.get('resilience_fallback')),'fallback_reason':result.get('fallback_reason'),'repair_provider':result.get('repair_provider'),'repair_model':result.get('repair_model'),'structure_recovery_provider':result.get('structure_recovery_provider'),'structure_recovery_model':result.get('structure_recovery_model'),'warnings':warnings}
+    step('saving','Saving completed Case Intelligence')
     fp=_fingerprint(user_id,case_id); now=int(time.time())
     if sb.enabled(): sb.cache_set(user_id,case_id,'case_intelligence',fp,data)
     else:
         with sqlite3.connect(DB_PATH) as db:
             db.execute('INSERT OR REPLACE INTO case_intelligence_cache(case_id,user_id,document_fingerprint,payload,updated_at) VALUES(?,?,?,?,?)',(case_id,user_id,fp,json.dumps(data,ensure_ascii=False),now)); db.commit()
+    step('completed','Case Intelligence completed')
     return {'status':'ready','stale':False,'partial':bool(warnings),'warnings':warnings,'updated_at':now,'intelligence':data}
 
 
