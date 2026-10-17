@@ -13,3 +13,4 @@ def test_search_exposes_strategy_controls():
     assert 'bm25_rescue_docs: int = None' in text
     assert 'rerank_stability: float = None' in text
     assert 'final_rank_score' in text
+    assert 'os.getenv("RAG_RETRIEVAL_STRATEGY", "improved")' in text

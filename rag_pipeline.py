@@ -384,7 +384,8 @@ class _PurePythonBM25Okapi:
                 continue
             q_idf = self.idf[term]
             for doc_id, tf in self.inverted[term]:
-                denom = tf + self.k1 * (1.0 - self.b + self.b * (self.doc_lens[doc_id] / self.avgdl))
+                doc_len = float(self.doc_lens[doc_id])
+                denom = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avgdl))
                 scores[doc_id] += q_idf * (tf * (self.k1 + 1.0)) / denom
         return scores
 
@@ -628,7 +629,7 @@ def search(
     # Retrieval quality controls. `legacy` reproduces the previous behavior.
     # `improved` preserves strong sparse authorities in the reranker pool and
     # blends reranker evidence with fusion rank for stability.
-    retrieval_strategy = (retrieval_strategy or os.getenv("RAG_RETRIEVAL_STRATEGY", "adaptive")).strip().lower()
+    retrieval_strategy = (retrieval_strategy or os.getenv("RAG_RETRIEVAL_STRATEGY", "improved")).strip().lower()
     if retrieval_strategy not in {"legacy", "improved", "adaptive"}:
         retrieval_strategy = "improved"
     if bm25_rescue_docs is None:

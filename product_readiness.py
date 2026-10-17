@@ -46,5 +46,5 @@ def verification_overview(citations: list[dict]) -> dict:
 
 def runtime_diagnostics(records_count: int, provider_status: dict[str, Any]) -> dict:
     return {"uptime_seconds":int(time.time()-_STARTED),"chunks_indexed":records_count,
-            "providers":provider_status,"retrieval_strategy":os.getenv("RAG_RETRIEVAL_STRATEGY","adaptive"),
+            "providers":provider_status,"retrieval_strategy":os.getenv("RAG_RETRIEVAL_STRATEGY","improved"),
             "version":"deployment-private-rag-final"}

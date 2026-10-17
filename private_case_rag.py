@@ -10,6 +10,7 @@ from rag_pipeline import clean_text, chunk_text, build_faiss_index, save_index, 
 from ocr_extraction import extract_pdf_pages
 from generate_answer import generate_answer, _source_out
 from citation_verification import verify_answer
+from private_evidence_verification import verify_private_answer
 from case_workspace import assert_case, FILES_ROOT, DB_PATH, list_documents, get_document_path
 from private_document_intelligence import classify_private_passage, preferred_private_roles
 import sqlite3
@@ -135,7 +136,16 @@ def ask_case(user_id,case_id,question,mode,top_k,verify,embed_model,reranker,cli
     # In BOTH mode retain strong candidates from both stores; generation sees explicit source headers.
     passages=sorted(passages,key=lambda x:x.get('rerank_score',x.get('score',0)),reverse=True)[:max(top_k, min(len(passages), top_k*2 if mode=='both' else top_k))]
     answer=generate_answer(question,passages,client)
-    verification=verify_answer(answer,passages,records_for_verify,client) if verify else None
+    verification=None
+    if verify:
+        private_passages=[p for p in passages if p.get("source_scope")=="private"]
+        global_passages=[p for p in passages if p.get("source_scope")=="global"]
+        if mode=="case":
+            verification=verify_private_answer(answer, private_passages)
+        elif mode=="global":
+            verification={"verification_type":"judgment","judgment":verify_answer(answer, global_passages, global_records or records_for_verify, client)}
+        else:
+            verification={"verification_type":"mixed","private_evidence":verify_private_answer(answer, private_passages) if private_passages else None,"judgment":verify_answer(answer, global_passages, global_records or [], client) if global_passages else None}
     return {'answer':answer,'sources':[_source(p) for p in passages],'verification':verification,'not_found':False,'mode':mode}
 
 

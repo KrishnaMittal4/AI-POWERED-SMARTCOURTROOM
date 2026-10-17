@@ -65,3 +65,7 @@ supabase/.temp/
 # Never commit production secrets
 *.pem
 *.key
+!.env.development.example
+!.env.production.example
+!frontend/.env.development.example
+!frontend/.env.production.example

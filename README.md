@@ -232,7 +232,7 @@ LEXAI keeps native PDF text extraction as the default. Pages with too little/poo
 V4.2 keeps Adaptive V4.1 ranking intact and adds local legal-query analysis (statutes/sections/articles/courts/case names), deterministic statute-aware sparse-query enrichment, ambiguity flags for underspecified section queries, and RAG Lab failure diagnostics that distinguish candidate-retrieval failures from ranking failures. No Groq/Gemini call is used for query routing or enrichment.
 
 ## V4.2.1 Legal Query Parser Hardening
-- Production adaptive retrieval is now the default (`RAG_RETRIEVAL_STRATEGY=adaptive`).
+- The recommended default retrieval strategy is improved (`RAG_RETRIEVAL_STRATEGY=improved`).
 - Normalizes Section/Sec./S./s./§ and Article/Art. citation variants.
 - Recognizes subsection-only forms such as `section (1-A)` as incomplete/ambiguous rather than silently treating them as generic text.
 - Canonical statute aliases include IPC, CrPC, NI Act, BNSS, BNS, ESI, EPF and historical Workmen's/Employees' Compensation naming.
@@ -280,3 +280,6 @@ Configure both `GEMINI_API_KEY` and `GROQ_API_KEY` for best resilience. Either p
 
 ## Production persistence (Supabase)
 The Render-Free build can use persistent Supabase PostgreSQL + private Storage without deploying the 848-judgment research corpus. Run `supabase/schema.sql`, keep the `lexai-private` bucket private, set `LEXAI_STORAGE_BACKEND=supabase`, and configure the backend-only Supabase Secret/service-role key in Render. See `SUPABASE_DEPLOYMENT.md`.
+
+## Private Evidence Verification
+Private Case Q&A now verifies generated claims against retrieved uploaded-document passages. It reports source filename/page, case-document role, allegation/testimony/direct-evidence attribution, multi-document corroboration, conservative contradiction signals, and evidence strength. Judgment Q&A retains the existing judgment citation/attribution verification policy. Production can run with the global 848-judgment corpus disabled; private evidence verification remains available.
