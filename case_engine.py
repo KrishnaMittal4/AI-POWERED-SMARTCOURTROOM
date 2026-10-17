@@ -4,6 +4,7 @@ from fastapi import HTTPException
 from case_workspace import DB_PATH, assert_case, list_documents
 import supabase_repository as sb
 from llm_router import route_task, GROQ_FALLBACK_MODEL
+from rag_pipeline import search
 
 
 def init_case_engine_db():
@@ -36,24 +37,30 @@ def get_intelligence(user_id,case_id):
 
 def _compact_context(user_id,case_id,embed,reranker,max_chars=12000):
     from private_case_rag import get_case_index,_paths,_ensure_embed_model
+    # Disable re-ranker in low-memory / Render free mode to cut latency
+    if os.getenv('LEXAI_LOW_MEMORY_MODE','false').lower() in {'1','true','yes','on'}:
+        reranker = None
     embed=_ensure_embed_model(embed)
     idx,recs=get_case_index(user_id,case_id,embed); base,_=_paths(user_id,case_id)
     queries=[
-      'material facts parties incident dates chronology procedural history',
-      'evidence witness statement CCTV medical forensic documentary exhibits',
-      'contradictions inconsistent statements disputed facts timeline conflict',
+      'material facts parties incident dates chronology',
+      'evidence witness statement documentary exhibits',
+      'contradictions inconsistent statements disputed facts',
       'legal issues sections acts statutes offences claims relief'
     ]
     chosen=[]; seen=set()
     for q in queries:
-        hits=search(q,idx,recs,embed,top_k=5,rerank=reranker is not None,reranker_model=reranker,bm25_index_dir=str(base))
+        try:
+            hits=search(q,idx,recs,embed,top_k=4,rerank=reranker is not None,reranker_model=reranker,bm25_index_dir=str(base))
+        except Exception:
+            hits=search(q,idx,recs,embed,top_k=4,rerank=False,reranker_model=None,bm25_index_dir=str(base))
         for h in hits:
             key=(h.get('source_file'),h.get('raw_text') or h.get('text'))
             if key not in seen: seen.add(key); chosen.append(h)
     parts=[]; total=0
     for h in chosen:
         page=next((r.get('page') for r in recs if r.get('source_file')==h.get('source_file') and r.get('raw_text')==h.get('raw_text')),None)
-        txt=(h.get('raw_text') or h.get('text') or '')[:1800]
+        txt=(h.get('raw_text') or h.get('text') or '')[:1500]
         block=f"SOURCE: {h.get('source_file')} | PAGE: {page or '-'}\n{txt}"
         if total+len(block)>max_chars:break
         parts.append(block); total+=len(block)

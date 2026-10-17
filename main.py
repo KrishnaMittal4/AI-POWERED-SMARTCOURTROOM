@@ -296,9 +296,9 @@ class CaseQueryRequest(BaseModel):
     verify: bool = True
 
 @app.post("/cases/{case_id}/query")
-def case_query(case_id: str, req: CaseQueryRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_query", "CASE_QUERY_PER_MIN", "CASE_QUERY_PER_DAY", 12, 200, use_global=False))):
-    return ask_case(user["id"], case_id, req.question, req.mode, req.top_k, req.verify,
-        state["embed_model"], state.get("reranker"), state["groq_client"],
+async def case_query(case_id: str, req: CaseQueryRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_query", "CASE_QUERY_PER_MIN", "CASE_QUERY_PER_DAY", 12, 200, use_global=False))):
+    return await run_in_threadpool(ask_case, user["id"], case_id, req.question, req.mode, req.top_k, req.verify,
+        state.get("embed_model"), state.get("reranker"), state["groq_client"],
         state.get("index"), state.get("records"))
 
 @app.get("/cases/{case_id}/intelligence")
@@ -306,8 +306,8 @@ def case_intelligence_get(case_id: str, user: dict = Depends(current_user)):
     return get_intelligence(user["id"], case_id)
 
 @app.post("/cases/{case_id}/intelligence/analyze")
-def case_intelligence_analyze(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_intelligence", "CASE_INTELLIGENCE_PER_MIN", "CASE_INTELLIGENCE_PER_DAY", 2, 20, use_global=False))):
-    return analyze_once(user["id"], case_id, state["groq_client"], state["embed_model"], state.get("reranker"))
+async def case_intelligence_analyze(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_intelligence", "CASE_INTELLIGENCE_PER_MIN", "CASE_INTELLIGENCE_PER_DAY", 2, 20, use_global=False))):
+    return await run_in_threadpool(analyze_once, user["id"], case_id, state["groq_client"], state.get("embed_model"), state.get("reranker"))
 
 @app.post("/cases/{case_id}/analysis/{kind}")
 def case_analysis(case_id: str, kind: str, user: dict = Depends(current_user)):
@@ -318,8 +318,8 @@ def case_issue_map_get(case_id: str, user: dict = Depends(current_user)):
     return get_issue_map(user["id"], case_id)
 
 @app.post("/cases/{case_id}/issue-map/build")
-def case_issue_map_build(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_issue_map", "CASE_ISSUE_MAP_PER_MIN", "CASE_ISSUE_MAP_PER_DAY", 2, 20, use_global=False))):
-    return build_issue_map(user["id"], case_id, state["groq_client"], state["embed_model"], state.get("reranker"), state.get("index"), state.get("records", []))
+async def case_issue_map_build(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited("case_issue_map", "CASE_ISSUE_MAP_PER_MIN", "CASE_ISSUE_MAP_PER_DAY", 2, 20, use_global=False))):
+    return await run_in_threadpool(build_issue_map, user["id"], case_id, state["groq_client"], state.get("embed_model"), state.get("reranker"), state.get("index"), state.get("records", []))
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=1000, description="The legal question to ask")
@@ -1085,7 +1085,9 @@ def case_note_delete(case_id: str, note_id: str, user: dict = Depends(current_us
 
 @app.post('/cases/{case_id}/argument')
 def case_argument(case_id: str, req: ArgumentRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_argument', 'CASE_ARGUMENT_PER_MIN', 'CASE_ARGUMENT_PER_DAY', 6, 80, use_global=False))):
-    return build_argument(user['id'],case_id,req.side,req.issue,state['groq_client'],state['embed_model'],state.get('reranker'),state.get('index'),state.get('records') or [])
+    # build_argument calls ask_case which lazy-loads embed_model; pass None if not resident.
+    # When global index is unavailable, ask_case gracefully falls back to case-only mode inside build_argument.
+    return build_argument(user['id'],case_id,req.side,req.issue,state['groq_client'],state.get('embed_model'),state.get('reranker'),state.get('index'),state.get('records') or [])
 
 @app.post('/cases/{case_id}/brief')
 def case_brief(case_id: str, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_brief', 'CASE_BRIEF_PER_MIN', 'CASE_BRIEF_PER_DAY', 4, 40, use_global=False))):
@@ -1098,7 +1100,7 @@ class CaseMootRequest(BaseModel):
 def case_moot(case_id: str, req: CaseMootRequest, user: dict = Depends(current_user), _rl: None = Depends(rate_limited('case_moot', 'CASE_MOOT_PER_MIN', 'CASE_MOOT_PER_DAY', 3, 30, use_global=False))):
     # In Render free-mode the global FAISS index is None; use 'case' mode only to avoid 503.
     _mode = 'both' if state.get('index') is not None else 'case'
-    grounded=ask_case(user['id'],case_id,req.issue,_mode,5,True,state['embed_model'],state['reranker'],state['groq_client'],state.get('index'),state.get('records') or [])
+    grounded=ask_case(user['id'],case_id,req.issue,_mode,5,True,state.get('embed_model'),state.get('reranker'),state['groq_client'],state.get('index'),state.get('records') or [])
     context='\n'.join(f"- {s.get('scope')}: {s.get('source_file')} p.{s.get('page') or '-'}: {s.get('text','')[:450]}" for s in grounded.get('sources',[]))
     dispute=f"{req.issue}\n\nCASE-SPECIFIC VERIFIED RETRIEVAL CONTEXT:\n{context}"
     # Global moot court debate requires the corpus; skip if unavailable and return case-grounded summary only.
@@ -1118,11 +1120,12 @@ def simulate_moot_court(
     _rl: None = Depends(rate_limited("moot", "MOOT_RATE_PER_MIN", "MOOT_RATE_PER_DAY", 6, 100, use_global=False)),
 ):
     """Run an adversarial moot court debate: Petitioner (Groq) vs Respondent (Groq) vs Bench (Gemini)."""
-    if "index" not in state:
-        raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
     if not client and not gemini_configured():
         raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+    # Global corpus required for full moot court; gracefully degrade in production if not available.
+    if state.get("index") is None:
+        raise HTTPException(status_code=503, detail="Moot court simulation requires the global judgment corpus, which is not enabled in this deployment. Use the Case-aware Moot Court inside a Private Case workspace instead.")
     try:
         return run_moot_court_debate(
             dispute=req.dispute,
@@ -1179,11 +1182,11 @@ def human_vs_ai_moot_court(
     _rl: None = Depends(rate_limited("moot_h", "MOOT_H_PER_MIN", "MOOT_H_PER_DAY", 6, 100, use_global=False)),
 ):
     """Run an interactive Human vs AI debate: Human Counsel vs AI Opponent vs Bench Scorecard & Verdict."""
-    if "index" not in state:
-        raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
     if not client and not gemini_configured():
         raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+    if state.get("index") is None:
+        raise HTTPException(status_code=503, detail="Human vs AI moot court requires the global judgment corpus, which is not enabled in this deployment.")
     try:
         return run_human_counsel_debate(
             dispute=req.dispute,
@@ -1213,11 +1216,11 @@ def human_counsel_reply(
     _rl: None = Depends(rate_limited("moot_r", "MOOT_R_PER_MIN", "MOOT_R_PER_DAY", 12, 200, use_global=False)),
 ):
     """Handle a follow-up rebuttal from the Human Advocate in a live multi-turn debate."""
-    if "index" not in state:
-        raise HTTPException(status_code=503, detail="Index not loaded yet.")
     client = state.get("groq_client")
     if not client and not gemini_configured():
         raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+    if state.get("index") is None:
+        raise HTTPException(status_code=503, detail="Multi-turn moot court requires the global judgment corpus, which is not enabled in this deployment.")
     try:
         return reply_human_counsel(
             dispute=req.dispute,

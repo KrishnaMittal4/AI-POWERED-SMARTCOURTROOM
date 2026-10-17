@@ -46,7 +46,9 @@ def _case_material(user_id,case_id,max_chars=30000):
 
 def build_argument(user_id,case_id,side,issue,client,embed,reranker,gidx,grecs):
     q=f'{issue}. Find case evidence and Indian legal precedents relevant to the {side} position.'
-    rag=ask_case(user_id,case_id,q,'both',5,True,embed,reranker,client,gidx,grecs)
+    # Use 'both' only when the global judgment index is available; degrade gracefully in production.
+    _mode = 'both' if gidx is not None else 'case'
+    rag=ask_case(user_id,case_id,q,_mode,5,True,embed,reranker,client,gidx,grecs)
     src='\n\n'.join(f"[{i+1}] {s.get('scope')} | {s.get('source_file')} | p.{s.get('page') or '-'}\n{s.get('text','')}" for i,s in enumerate(rag.get('sources',[])))
     data=_json_from_llm(client,'You are an Indian legal research assistant. Use ONLY supplied sources. Never invent statutes, facts, cases, quotations or citations. Return JSON only.',f'''Build a {side} argument on: {issue}\nSOURCES:\n{src}\nReturn {{"issue":"","position":"","primary_argument":"","supporting_evidence":[{{"point":"","citation":""}}],"precedents":[{{"point":"","citation":""}}],"counterargument":"","rebuttal":"","limitations":""}}. If support is absent say so.''')
     data['retrieval_sources']=rag.get('sources',[]); return data
