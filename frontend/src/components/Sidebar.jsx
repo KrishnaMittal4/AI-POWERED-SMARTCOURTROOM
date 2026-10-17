@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { timeAgo, tabKeys } from '../lib/utils.js'
 
-export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose, appMode, onGlobal, onCases, onMoot, onDraft }) {
+export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose, appMode, onGlobal, onCases, onMoot, onDraft, globalCorpusAvailable=false, onUploadResearch }) {
   const [tab, setTab] = useState('recent')
   const [filter, setFilter] = useState('')
 
@@ -16,15 +16,15 @@ export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave
     <aside id="sidebar" className={`sidebar ${open ? 'open' : ''}`} aria-label="Research history">
       {appMode === 'research' && <nav className="advocate-nav" aria-label="Advocate workspace">
         <span className="side-label">ADVOCATE WORKSPACE</span>
-        <button onClick={()=>{onGlobal?.();onClose()}}>⌕ <span>Global Research</span></button>
+        <button onClick={()=>{(globalCorpusAvailable ? onGlobal : onUploadResearch)?.();onClose()}}>⌕ <span>{globalCorpusAvailable ? 'Global Research' : 'Document Research'}</span></button>
         <button onClick={()=>{onCases?.();onClose()}}>▣ <span>My Cases</span></button>
         <button onClick={()=>{onMoot?.();onClose()}}>⚖ <span>Moot Court</span></button>
         <button onClick={()=>{onDraft?.();onClose()}}>✎ <span>Legal Drafting</span></button>
       </nav>}
       <span className="side-label">RESEARCH</span>
-      <button className="new-btn" onClick={() => { onNew(); onClose() }}>
+      <button className="new-btn" onClick={() => { (globalCorpusAvailable ? onNew : onUploadResearch)?.(); onClose() }}>
         <span>＋</span>
-        <span>New Research</span>
+        <span>{globalCorpusAvailable ? 'New Research' : 'Upload & Research'}</span>
       </button>
 
       <div className="tabs" role="tablist" aria-label="History" onKeyDown={(e) => tabKeys(e, ['recent', 'saved'], tab, setTab, 'hs')}>

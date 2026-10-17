@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { authenticate } from '../lib/auth.js'
 
-export default function AuthScreen({ onAuthenticated }) {
-  const [mode, setMode] = useState('login')
+export default function AuthScreen({ onAuthenticated, initialMode = 'login', embedded = false, onClose }) {
+  const [mode, setMode] = useState(initialMode)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -18,8 +18,8 @@ export default function AuthScreen({ onAuthenticated }) {
     } catch (err) { setError(err.message) } finally { setBusy(false) }
   }
 
-  return <main className="auth-page">
-    <section className="auth-card" aria-labelledby="auth-title">
+  const content = <section className="auth-card" aria-labelledby="auth-title">
+      {embedded && <button type="button" className="auth-modal-close" onClick={onClose} aria-label="Close sign in">✕</button>}
       <div className="auth-mark">⚖</div>
       <div className="auth-kicker">SMART COURTROOM</div>
       <h1 id="auth-title">{mode === 'login' ? 'Welcome back' : 'Create your legal workspace'}</h1>
@@ -37,5 +37,5 @@ export default function AuthScreen({ onAuthenticated }) {
       </form>
       <p className="auth-note">🔒 Passwords are salted and hashed. Your session is protected by a signed access token.</p>
     </section>
-  </main>
+  return embedded ? content : <main className="auth-page">{content}</main>
 }

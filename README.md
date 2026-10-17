@@ -286,3 +286,6 @@ Private Case Q&A now verifies generated claims against retrieved uploaded-docume
 
 ## Production Case Intelligence reliability
 Analyze Case uses a short 202 job-start request plus status polling. Existing cached analysis is preserved until a replacement analysis completes. The public `/` and `/health` endpoints are safe for Render probes, and production UI avoids global `/documents` when the research corpus is disabled.
+
+## Production document research
+When the global research corpus is disabled, the production UI switches from Global Research to Document Research. Authenticated users can upload a judgment, court order, or case PDF from the landing page. LEXAI creates a private workspace, indexes the PDF, opens Ask LEXAI, and verifies answers against document/page/passage provenance. The research-only global corpus remains available only when GLOBAL_JUDGMENT_CORPUS_ENABLED=true.

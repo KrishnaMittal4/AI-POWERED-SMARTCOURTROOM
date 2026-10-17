@@ -107,6 +107,17 @@ export default function App({ user, onLogout }) {
   const historyScope = `${user.id}:${activeCaseId || 'global'}`
   const entry = useMemo(() => history.find((h) => h.id === activeId) || null, [history, activeId])
 
+  useEffect(() => {
+    const action = sessionStorage.getItem('lexai:post-auth-action')
+    if (!action) return
+    sessionStorage.removeItem('lexai:post-auth-action')
+    if (action === 'upload') { setAnnounce('Signed in. Choose a judgment or case PDF to research.'); setTimeout(() => quickPdfInputRef.current?.click(), 120) }
+    if (action === 'cases') { setCasesOpen(true); setAnnounce('Signed in. Open your private case workspace.') }
+    if (action === 'moot') setMootOpen(true)
+    if (action === 'draft') setCitizenDraftOpen(true)
+    if (action === 'ask') setTimeout(() => inputRef.current?.focus(), 50)
+  }, [])
+
   useEffect(() => { document.documentElement.dataset.theme = theme }, [theme])
   useEffect(() => { document.documentElement.dataset.accent = accent }, [accent])
   useEffect(() => { saveHistory(history, historyScope) }, [history, historyScope])
@@ -563,6 +574,8 @@ export default function App({ user, onLogout }) {
           onOpen={openItem} onNew={newResearch} onToggleSave={toggleSave}
           onDelete={remove} onClear={() => { setHistory([]); setActiveId(null) }} onClose={() => setMenu(false)}
           appMode={appMode}
+          globalCorpusAvailable={globalCorpusAvailable}
+          onUploadResearch={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(false);setTimeout(()=>quickPdfInputRef.current?.click(),50)}}
           onGlobal={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(false);newResearch()}}
           onCases={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(true);setActiveId(null);setCitizenResult(null)}}
           onMoot={()=>{setMootQuery(question||'');setMootOpen(true)}}
@@ -705,10 +718,10 @@ export default function App({ user, onLogout }) {
                 </div>
               ) : (
                 <div className="feature-pills" style={{ justifyContent: 'center', marginBottom: '32px' }}>
-                  <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Citation Verification</TiltCard>
+                  <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Citation & Evidence Verification</TiltCard>
                   <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Moot Court Simulation</TiltCard>
                   <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Legal Draft Generator</TiltCard>
-                  <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Precedent Analysis</TiltCard>
+                  <TiltCard as="span" className="feature-pill" maxTilt={8}><span className="dot" />Private Document Research</TiltCard>
                 </div>
               )}
 
@@ -728,8 +741,8 @@ export default function App({ user, onLogout }) {
                     className="quick-upload-card"
                   >
                     <span>📄</span>
-                    <b>{quickPdfUploading ? 'Indexing PDF…' : 'Upload Case PDF'}</b>
-                    <small>Upload PDF, ask questions & verify citations</small>
+                    <b>{quickPdfUploading ? 'Indexing PDF…' : 'Upload & Research PDF'}</b>
+                    <small>Judgment, order or case file · ask questions with verified sources</small>
                   </button>
                   {globalCorpusAvailable && <button type="button" onClick={openJudgmentUpload} disabled={uploading}><span>📁</span><b>{uploading ? 'Indexing PDFs…' : 'Upload Judgments'}</b><small>Add judgments to the research corpus</small></button>}
                   <button type="button" onClick={() => setCasesOpen(true)}><span>🗂️</span><b>My Cases</b><small>Open private case workspaces</small></button>
