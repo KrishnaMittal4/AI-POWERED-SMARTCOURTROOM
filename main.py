@@ -47,6 +47,7 @@ from rag_pipeline import (
 )
 from generate_answer import answer_query, answer_query_stream
 from feedback_store import FeedbackStore
+from feedback_learning import query_type as feedback_query_type, profile_adjustment as feedback_profile_adjustment
 from similar_cases import find_similar, UnknownDocument
 from moot_court import run_moot_court_debate, answer_interlocutory_query, run_human_counsel_debate, reply_human_counsel
 from security import rate_limited, require_admin
@@ -567,6 +568,9 @@ class FeedbackRequest(BaseModel):
     top_score: float | None = None
     weak_match: bool = False
     not_found: bool = False
+    sources: list[dict] = []
+    correct_source: str | None = Field(None, max_length=500)
+    event_type: str = Field("answer_rating", pattern="^(answer_rating|correct_source)$")
 
 
 class FeedbackResponse(BaseModel):
@@ -589,6 +593,10 @@ def submit_feedback(
         top_score=req.top_score,
         weak_match=req.weak_match,
         not_found=req.not_found,
+        sources=req.sources,
+        query_type=feedback_query_type(req.question),
+        correct_source=req.correct_source,
+        event_type=req.event_type,
     )
     return {"status": "ok", "id": fid}
 
@@ -603,6 +611,12 @@ def feedback_summary():
 def feedback_recent(limit: int = Query(50, ge=1, le=500)):
     """Recent feedback entries (for admin/debug)."""
     return feedback.recent(limit)
+
+
+@app.get("/feedback/learning", dependencies=[Depends(require_admin)])
+def feedback_learning(q: str = Query("general legal question", max_length=1000)):
+    """Explain the bounded contextual-bandit adjustment for diagnostics."""
+    return feedback_profile_adjustment(q)
 
 
 # ---------------------------------------------------------------------------

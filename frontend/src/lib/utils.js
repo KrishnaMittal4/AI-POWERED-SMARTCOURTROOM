@@ -215,12 +215,12 @@ export const VERDICT_LABEL = {
 // ---------- feedback ----------
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-export async function submitFeedback({ question, answer, rating, comment, top_score, weak_match, not_found }) {
+export async function submitFeedback({ question, answer, rating, comment, top_score, weak_match, not_found, sources = [], correct_source = null, event_type = 'answer_rating' }) {
   try {
     const res = await apiFetch(`${API_BASE}/feedback`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, answer, rating, comment, top_score, weak_match, not_found }),
+      body: JSON.stringify({ question, answer, rating, comment, top_score, weak_match, not_found, sources, correct_source, event_type }),
     })
     return res.ok
   } catch {

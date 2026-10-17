@@ -289,3 +289,11 @@ Analyze Case uses a short 202 job-start request plus status polling. Existing ca
 
 ## Production document research
 When the global research corpus is disabled, the production UI switches from Global Research to Document Research. Authenticated users can upload a judgment, court order, or case PDF from the landing page. LEXAI creates a private workspace, indexes the PDF, opens Ask LEXAI, and verifies answers against document/page/passage provenance. The research-only global corpus remains available only when GLOBAL_JUDGMENT_CORPUS_ENABLED=true.
+
+### Feedback-aware retrieval learning
+LEXAI includes a bounded contextual-bandit layer. Explicit thumbs-up/down and
+"Correct source" feedback are stored as reward events. After a minimum number
+of events, retrieval weights/source priors receive small bounded adjustments.
+Citation and evidence verification are never altered by this learned policy.
+Production Supabase deployments should run the latest `supabase/schema.sql` to
+create the `rag_feedback` table.

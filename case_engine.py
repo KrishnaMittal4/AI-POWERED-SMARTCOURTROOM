@@ -238,6 +238,18 @@ def _structured_children_empty(data):
     return not any(data.get(k) for k in ('timeline','evidence','legal_issues'))
 
 
+def _completeness(data):
+    """Return a conservative structured-analysis completeness assessment."""
+    summary_ok=len(str(data.get('summary') or '').strip()) >= 40
+    present={k:bool(data.get(k)) for k in ('timeline','evidence','legal_issues')}
+    child_count=sum(present.values())
+    if not summary_ok or child_count==0:
+        return {'status':'incomplete','summary_ok':summary_ok,'children':present,'score':child_count}
+    if child_count < 2:
+        return {'status':'partial','summary_ok':summary_ok,'children':present,'score':child_count}
+    return {'status':'complete','summary_ok':summary_ok,'children':present,'score':child_count}
+
+
 def _targeted_structure_fallback(context, client, previous_result):
     """One compact fallback call only when a rich summary exists but all child collections vanished."""
     schema='{"timeline":[{"date":"","time":null,"event":"","source_file":"","page":null}],"evidence":[{"label":"","type":"testimonial|digital|documentary|forensic|physical|other","summary":"","supports":"neutral|unknown|prosecution|defence","source_file":"","page":null,"caveat":""}],"contradictions":[{"issue":"","statement_a":"","source_a":"","page_a":null,"statement_b":"","source_b":"","page_b":null,"severity":"low|medium|high","explanation":""}],"legal_issues":[{"issue":"","basis":"","source_file":"","page":null}]}'
@@ -315,6 +327,18 @@ def analyze_once(user_id,case_id,client,embed,reranker,progress=None):
             warnings.append('Case summary was generated, but Timeline, Evidence and Legal Issues could not be reliably extracted. Re-analyze after checking source text quality.')
             data['_incomplete_structured_analysis']=True
 
+    completeness=_completeness(data)
+    data['_completeness']=completeness
+    if completeness['status']=='incomplete':
+        # Never overwrite a previously useful cache with an empty normalized object.
+        # The background job will surface this as failed/retryable instead of "mapped and ready".
+        raise HTTPException(422, detail={'code':'incomplete_case_intelligence','message':'Case Intelligence could not extract a reliable summary plus Timeline, Evidence or Legal Issues from the uploaded documents. Check PDF text/OCR quality and retry.','retryable':True,'completeness':completeness})
+    if completeness['status']=='partial':
+        warnings.append('Case Intelligence is partial: only one structured section was confidently extracted.')
+        data['_incomplete_structured_analysis']=True
+    else:
+        data['_incomplete_structured_analysis']=False
+    data['_analysis_status']=completeness['status']
     data['_generation']={'provider':result.get('provider'),'model':result.get('model'),'fallback_used':bool(result.get('fallback_used') or result.get('resilience_fallback')),'fallback_reason':result.get('fallback_reason'),'repair_provider':result.get('repair_provider'),'repair_model':result.get('repair_model'),'structure_recovery_provider':result.get('structure_recovery_provider'),'structure_recovery_model':result.get('structure_recovery_model'),'warnings':warnings}
     step('saving','Saving completed Case Intelligence')
     fp=_fingerprint(user_id,case_id); now=int(time.time())

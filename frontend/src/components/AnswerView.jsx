@@ -46,6 +46,7 @@ function FeedbackButtons({ entry }) {
       top_score: entry.top_score,
       weak_match: entry.weak_match,
       not_found: entry.not_found,
+      sources: entry.sources || [],
     })
   }
 
@@ -76,6 +77,18 @@ function FeedbackButtons({ entry }) {
 export default function AnswerView({ entry, onJump, onToggleSave, onRetryWider, loadingWider, onAsk, streaming, onOpenMootCourt }) {
   const [copied, setCopied] = useState('')
   const [draftOpen, setDraftOpen] = useState(false)
+  const [sourceFeedback, setSourceFeedback] = useState(false)
+
+  async function markTopSourceCorrect() {
+    const src = entry.sources?.[0]
+    if (!src || sourceFeedback) return
+    setSourceFeedback(true)
+    await submitFeedback({
+      question: entry.question, answer: entry.answer || '', rating: 1,
+      sources: entry.sources || [], correct_source: src.source_file || src.case_name,
+      event_type: 'correct_source', top_score: entry.top_score, weak_match: entry.weak_match, not_found: entry.not_found,
+    })
+  }
   const isStreaming = streaming && !entry.answer
   const answerText = entry.answer || entry._streamingText || ''
   const best = entry.sources?.length ? Math.max(...entry.sources.map((s) => s.score)) : 0
@@ -168,6 +181,9 @@ export default function AnswerView({ entry, onJump, onToggleSave, onRetryWider, 
         }}>
           <span>✅</span>
           <span>Verified against document: <b>{entry.sources[0]?.source_file || entry.sources[0]?.case_name}</b> · Grounded in uploaded text</span>
+          <button type="button" className={`source-correct-btn ${sourceFeedback ? 'active' : ''}`} onClick={markTopSourceCorrect} disabled={sourceFeedback} title="Teach retrieval that this was the correct supporting source">
+            {sourceFeedback ? '✓ Source learned' : '✓ Correct source'}
+          </button>
         </div>
       )}
 

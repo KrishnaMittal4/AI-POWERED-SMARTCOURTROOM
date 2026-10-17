@@ -49,3 +49,22 @@ def preferred_private_roles(question: str) -> set[str]:
     if any(x in q for x in ["medical", "injury", "doctor"]): return {"MEDICAL_EVIDENCE"}
     if any(x in q for x in ["timeline", "when", "date", "after", "before"]): return {"DATE_EVENT","PROCEDURAL_EVENT"}
     return set()
+
+
+def detect_document_policy(text: str, filename: str = "") -> dict:
+    """Conservatively detect whether a private upload is itself a judgment/order.
+
+    The file remains private; this only selects the verification semantics.
+    """
+    t=(text or "").lower(); f=(filename or "").lower()
+    score=0
+    if re.search(r"\b(judg(e)?ment|judgment|court order|order)\b", f): score += 2
+    signals=[
+        r"\bin the (supreme court|high court|court of)\b",
+        r"\bcoram\b", r"\bjudg(e)?ment\b", r"\bwe (therefore )?hold\b",
+        r"\bappeal (is )?(allowed|dismissed)\b", r"\bpetition (is )?(allowed|dismissed)\b",
+        r"\bordered accordingly\b", r"\bfor the foregoing reasons\b"
+    ]
+    score += sum(1 for pat in signals if re.search(pat,t))
+    policy='judgment' if score >= 3 else 'private_evidence'
+    return {'document_policy':policy,'document_policy_confidence':round(min(.97,.55+.08*score),2) if score else .55}

@@ -12,9 +12,10 @@ from generate_answer import generate_answer, _source_out
 from citation_verification import verify_answer
 from private_evidence_verification import verify_private_answer
 from case_workspace import assert_case, FILES_ROOT, DB_PATH, list_documents, get_document_path
-from private_document_intelligence import classify_private_passage, preferred_private_roles
+from private_document_intelligence import classify_private_passage, preferred_private_roles, detect_document_policy
 import sqlite3
 import supabase_repository as sb
+from legal_judgment_intelligence import classify_legal_role
 
 INDEX_ROOT = Path(os.getenv('CASE_INDEX_DIR', str(Path(os.getenv('LEXAI_DATA_ROOT', '.')) / 'user_case_indexes')))
 _lock = threading.RLock()
@@ -67,10 +68,18 @@ def _page_records(user_id:int, case_id:str):
                 if not txt: continue
                 for i,ch in enumerate(chunk_text(txt)):
                     header=f'[Private Case Document: {original} | Page: {page_no}]'
+                    policy=detect_document_policy(txt, original)
+                    extra=classify_private_passage(ch, original)
+                    if policy.get('document_policy')=='judgment':
+                        try:
+                            lr=classify_legal_role(ch)
+                            extra.update({'legal_role':lr.get('legal_role') or lr.get('role') or 'UNKNOWN','legal_role_confidence':lr.get('confidence',0.0)})
+                        except Exception:
+                            extra.update({'legal_role':'UNKNOWN','legal_role_confidence':0.0})
                     records.append({'chunk_id':f'{stored}:p{page_no}:c{i}','text':f'{header} {ch}','raw_text':ch,
-                        'case_name':original,'court':'Private case file','case_no':None,'source_file':original,
+                        'case_name':original,'court':'Private uploaded document','case_no':'Unknown','source_file':original,
                         'page':page_no,'document_id':doc.get('id'),'source_scope':'private','extraction_method':page_info.get('extraction_method','native'),
-                        'extraction_quality_ok':page_info.get('quality_ok',True), **classify_private_passage(ch, original)})
+                        'extraction_quality_ok':page_info.get('quality_ok',True), **policy, **extra})
             if summary.get('failed_pages'):
                 print(f"Private case extraction warning ({original}): unreadable/low-quality pages {summary['failed_pages']}")
         except Exception as e:
@@ -107,7 +116,7 @@ def get_case_index(user_id:int, case_id:str, embed_model):
 
 
 def _source(p):
-    x=_source_out(p); x['page']=p.get('page'); x['scope']=p.get('source_scope','private'); return x
+    x=_source_out(p); x['page']=p.get('page'); x['scope']=p.get('source_scope','private'); x['document_policy']=p.get('document_policy'); x['legal_role']=p.get('legal_role'); x['case_role']=p.get('case_role'); return x
 
 
 def ask_case(user_id,case_id,question,mode,top_k,verify,embed_model,reranker,client,global_index=None,global_records=None):
@@ -122,7 +131,7 @@ def ask_case(user_id,case_id,question,mode,top_k,verify,embed_model,reranker,cli
         preferred=preferred_private_roles(question)
         for x in p:
             rec=next((r for r in recs if r['source_file']==x.get('source_file') and r.get('raw_text')==x.get('raw_text')), {})
-            x['source_scope']='private'; x['page']=rec.get('page'); x['case_role']=rec.get('case_role','OTHER'); x['case_role_confidence']=rec.get('case_role_confidence',0.0)
+            x['source_scope']='private'; x['page']=rec.get('page'); x['case_role']=rec.get('case_role','OTHER'); x['case_role_confidence']=rec.get('case_role_confidence',0.0); x['document_policy']=rec.get('document_policy','private_evidence'); x['legal_role']=rec.get('legal_role'); x['legal_role_confidence']=rec.get('legal_role_confidence',0.0)
             # Conservative role boost: relevance still dominates.
             x['_private_rank_score']=float(x.get('rerank_score',x.get('score',0)) or 0)+(0.12 if preferred and x['case_role'] in preferred else 0.0)
         p=sorted(p,key=lambda x:x.get('_private_rank_score',0),reverse=True)[:top_k]
@@ -141,7 +150,16 @@ def ask_case(user_id,case_id,question,mode,top_k,verify,embed_model,reranker,cli
         private_passages=[p for p in passages if p.get("source_scope")=="private"]
         global_passages=[p for p in passages if p.get("source_scope")=="global"]
         if mode=="case":
-            verification=verify_private_answer(answer, private_passages)
+            judgment_passages=[p for p in private_passages if p.get('document_policy')=='judgment']
+            evidence_passages=[p for p in private_passages if p.get('document_policy')!='judgment']
+            if judgment_passages and not evidence_passages:
+                judgment_records=[r for r in records_for_verify if r.get('document_policy')=='judgment']
+                verification={'verification_type':'judgment','judgment':verify_answer(answer, judgment_passages, judgment_records, client),'source_origin':'private_upload'}
+            elif judgment_passages:
+                judgment_records=[r for r in records_for_verify if r.get('document_policy')=='judgment']
+                verification={'verification_type':'mixed','private_evidence':verify_private_answer(answer,evidence_passages) if evidence_passages else None,'judgment':verify_answer(answer,judgment_passages,judgment_records,client),'source_origin':'private_upload'}
+            else:
+                verification=verify_private_answer(answer, evidence_passages)
         elif mode=="global":
             verification={"verification_type":"judgment","judgment":verify_answer(answer, global_passages, global_records or records_for_verify, client)}
         else:

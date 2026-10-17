@@ -590,7 +590,16 @@ def adaptive_retrieval_profile(query: str):
     analysis=analyze_legal_query(query); kind=analysis['query_type']
     profiles={'statutory':(0.85,1.55,0.42),'case_citation':(0.55,1.85,0.50),'semantic':(1.35,0.95,0.22),'advocate':(1.15,1.25,0.30),'mixed':(1.0,1.25,0.30)}
     dw,bw,st=profiles[kind]
-    return {'query_type':kind,'dense_weight':dw,'bm25_weight':bw,'rerank_stability':st,'query_analysis':analysis,'enriched_query':enrich_legal_query(query)}
+    learning={'dense_multiplier':1.0,'bm25_multiplier':1.0,'events':0,'reward_mean':0.0,'bounded_delta':0.0}
+    if os.getenv('FEEDBACK_LEARNING_ENABLED','true').lower() in {'1','true','yes','on'}:
+        try:
+            from feedback_learning import profile_adjustment
+            learning=profile_adjustment(query)
+            dw=max(0.35,min(2.25,dw*learning['dense_multiplier']))
+            bw=max(0.35,min(2.25,bw*learning['bm25_multiplier']))
+        except Exception:
+            pass
+    return {'query_type':kind,'dense_weight':dw,'bm25_weight':bw,'rerank_stability':st,'query_analysis':analysis,'enriched_query':enrich_legal_query(query),'feedback_learning':learning}
 
 # STEP 8: RETRIEVAL (Hybrid: Dense FAISS + Sparse BM25 via RRF + Optional Re-ranking)
 # ---------------------------------------------------------------------------
@@ -643,6 +652,17 @@ def search(
         dense_weight = adaptive_profile["dense_weight"]
         bm25_weight = adaptive_profile["bm25_weight"]
         rerank_stability = adaptive_profile["rerank_stability"]
+    elif os.getenv('FEEDBACK_LEARNING_ENABLED','true').lower() in {'1','true','yes','on'}:
+        # Improved/legacy-compatible retrieval can also learn, but only through
+        # the same bounded multipliers. This keeps the feature useful in the
+        # production default without changing verification or hard filters.
+        try:
+            from feedback_learning import profile_adjustment
+            learned=profile_adjustment(query)
+            dense_weight=max(0.35,min(2.25,dense_weight*learned['dense_multiplier']))
+            bm25_weight=max(0.10,min(2.25,bm25_weight*learned['bm25_multiplier']))
+        except Exception:
+            pass
 
     query_vec = np.asarray(
         model.encode([query], normalize_embeddings=True, convert_to_numpy=True)
@@ -715,6 +735,14 @@ def search(
             rrf_val += dense_weight / (rrf_k + dense_rank[idx])
         if idx in bm25_rank:
             rrf_val += bm25_weight / (rrf_k + bm25_rank[idx])
+        # Bounded source prior learned from explicit feedback. It is deliberately
+        # tiny and can never overpower retrieval relevance.
+        if os.getenv('FEEDBACK_LEARNING_ENABLED','true').lower() in {'1','true','yes','on'}:
+            try:
+                from feedback_learning import source_bonus
+                rrf_val += source_bonus(query, records[idx].get('source_file'))
+            except Exception:
+                pass
         rrf_scores[idx] = rrf_val
 
     # Sort candidates by fused RRF score descending
