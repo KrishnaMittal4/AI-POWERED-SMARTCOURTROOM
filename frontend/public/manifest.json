@@ -1,0 +1,59 @@
+{
+  "name": "LexAI · AI Legal Research & Smart Courtroom",
+  "short_name": "LexAI",
+  "description": "AI-powered legal research, citation verification, and smart courtroom assistant for Indian jurisprudence.",
+  "start_url": "/",
+  "id": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0f1d",
+  "theme_color": "#0a0f1d",
+  "categories": ["legal", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Citizen Legal Advisor",
+      "short_name": "Citizen Advisor",
+      "description": "Simple legal advice and rights analysis for citizens",
+      "url": "/?mode=citizen",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Advocate Research",
+      "short_name": "Research",
+      "description": "Case law search with verified citation evidence",
+      "url": "/?mode=advocate",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Moot Court Simulation",
+      "short_name": "Moot Court",
+      "description": "Simulate legal arguments before an AI judicial bench",
+      "url": "/?tab=moot",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

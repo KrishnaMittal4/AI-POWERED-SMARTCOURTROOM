@@ -16,6 +16,7 @@ import CasesDashboard from './components/CasesDashboard.jsx'
 import RagLab from './components/RagLab.jsx'
 import BnsLensModal from './components/BnsLensModal.jsx'
 import ScanNoticeModal from './components/ScanNoticeModal.jsx'
+import PwaInstallPrompt from './components/PwaInstallPrompt.jsx'
 import { loadHistory, saveHistory, summarize, streamQuery } from './lib/utils.js'
 import { apiFetch } from './lib/auth.js'
 
@@ -552,6 +553,7 @@ export default function App({ user, onLogout }) {
           </div>
           <button className="btn-quiet header-tool-btn" onClick={() => setBnsLensOpen(true)} title="BNS ↔ IPC Cross-Reference Lens">⚖️ BNS Lens</button>
           <button className="btn-quiet header-tool-btn" onClick={() => setScanNoticeOpen(true)} title="Scan & Analyze Legal Notice or Contract">📄 Scan Notice</button>
+          <PwaInstallPrompt inHeaderOnly />
           <input type="file" ref={fileInputRef} onChange={(e)=>stageJudgments(e.target.files)} multiple accept=".pdf" style={{display:'none'}} />
           <div className="health-wrap"><button className={`status ${health.state}`} onClick={()=>setHealthOpen(v=>!v)} title="System status"><i aria-hidden="true" />{health.state==='ok'?'System':health.state==='down'?'Offline':'Connecting'}</button>{healthOpen&&<div className="health-popover"><b>LEXAI System</b><div><span>Legal Knowledge Base</span><strong className={health.state==='ok'?'ok':'warn'}>{health.state==='ok'?'Indexed & Ready':'Unavailable'}</strong></div><div><span>Groq</span><strong className={health.providers?.groq?.configured?'ok':'warn'}>{health.providers?.groq?.configured?'Configured':'Not configured'}</strong></div><div><span>Gemini</span><strong className={health.providers?.gemini?.configured&&health.providers?.gemini?.sdk_available?'ok':'warn'}>{health.providers?.gemini?.configured?(health.providers?.gemini?.sdk_available?'Configured':'SDK issue'):'Not configured'}</strong></div><small>Health view does not consume provider quota.</small></div>}</div>
           <div className="user-chip" title={user.email}><span className="user-avatar">{(user.name || user.email).charAt(0).toUpperCase()}</span><span className="user-chip-text"><b>{user.name}</b><small>{user.email}</small></span></div>
@@ -948,6 +950,7 @@ export default function App({ user, onLogout }) {
         onClose={() => { setCitizenDraftOpen(false); setDraftPrefill(null) }}
         prefill={draftPrefill}
       />
+      <PwaInstallPrompt />
     </div>
   )
 }
