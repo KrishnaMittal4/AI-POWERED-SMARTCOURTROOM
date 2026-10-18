@@ -211,8 +211,9 @@ information to answer, say so explicitly instead of guessing or filling \
 the gap with outside knowledge.
  
 FORMATTING & PRESENTATION:
-- Structure your answer cleanly with Markdown headings (##, ###), bullet points, and bold emphasis.
-- Whenever explaining multiple requirements, comparing case holdings, or listing statutory provisions, present them in a clean Markdown table (| Parameter / Issue | Legal Rule / Finding |) for fast, structured readability.
+- Structure your answer with clear Markdown headings (e.g. ## Executive Summary, ## Applicable Legal Framework, ## Judicial Precedents & Analysis, ## Key Takeaways).
+- Use bullet points and bold emphasis for legal tests, statutory elements, and conditions.
+- Whenever explaining multiple requirements, comparing case holdings, or listing statutory provisions, present them in a clean Markdown table (| Parameter / Issue | Legal Principle / Ratio | Source / Precedent |) for fast, structured readability.
 
 Context:
 {context}

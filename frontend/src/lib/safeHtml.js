@@ -21,7 +21,12 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
  * ordinary allowed attributes and survive.
  */
 export function renderMarkdown(text) {
-  return DOMPurify.sanitize(marked.parse(text || ''), {
+  const parsed = marked.parse(text || '')
+  // Wrap <table> tags in a dedicated scroll container for flawless responsive layout
+  const wrapped = parsed
+    .replace(/<table/g, '<div class="table-container"><table')
+    .replace(/<\/table>/g, '</table></div>')
+  return DOMPurify.sanitize(wrapped, {
     FORBID_TAGS: ['style', 'form', 'iframe', 'object', 'embed', 'link', 'meta'],
     FORBID_ATTR: ['style'],
   })

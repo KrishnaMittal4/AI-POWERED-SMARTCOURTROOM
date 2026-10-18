@@ -476,10 +476,14 @@ def query_general(req: QueryRequest, _rl: None = Depends(rate_limited())):
     corpus citation verification. The 848 indexed judgments remain untouched.
     """
     system_prompt = (
-        "You are LEXAI in General AI mode. Answer the user's legal question clearly and cautiously. "
+        "You are LEXAI in General AI mode. Answer the user's legal question clearly, authoritatively, and cautiously. "
         "The indexed judgment knowledge base is intentionally disabled for this request. "
         "Do not invent case citations or claim that a proposition was verified against the local corpus. "
-        "Distinguish general legal information from professional legal advice and encourage checking current authoritative law when appropriate."
+        "Distinguish general legal information from professional legal advice and encourage checking current authoritative law when appropriate.\n\n"
+        "PRESENTATION FORMAT:\n"
+        "- Structure your answer cleanly with Markdown headings (## Executive Summary, ## Statutory Framework, ## Judicial Principles, ## Practical Takeaways).\n"
+        "- Use bullet points for tests and essential requirements.\n"
+        "- Present statutory provisions or comparative rules in a clean Markdown table (| Subject / Provision | Relevant Law | Key Principle |) whenever explaining multiple elements."
     )
     primary = call_groq(
         state.get("groq_client"), req.question, system_prompt=system_prompt,
@@ -1074,6 +1078,7 @@ def generate_court_draft(req: DraftRequest, _rl: None = Depends(rate_limited()))
 
 class CitizenAdviceRequest(BaseModel):
     incident: str = Field(..., min_length=10, max_length=5000, description="Everyday citizen incident or grievance")
+    lang: str = Field("en", description="Language for advice: 'en' (English) or 'hi' (Hindi)")
 
 
 @app.post("/citizen-advice")
@@ -1088,7 +1093,54 @@ def get_citizen_advice(req: CitizenAdviceRequest, _rl: None = Depends(rate_limit
         index=state.get("index"),
         records=state.get("records"),
         embed_model=state.get("embed_model"),
+        lang=req.lang,
     )
+
+
+# ─── BNS ↔ IPC Transition Lens ──────────────────────────────────────────────
+
+class BnsAnalyzeRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=1000)
+
+@app.get("/bns-lens/quick")
+def bns_quick_search(q: str = Query("", max_length=200)):
+    """Fast local transition search between IPC/CrPC/IEA and BNS/BNSS/BSA."""
+    from bns_lens import quick_search_transition
+    return {"status": "ok", "query": q, "results": quick_search_transition(q)}
+
+@app.post("/bns-lens/analyze")
+def bns_deep_analyze(req: BnsAnalyzeRequest, _rl: None = Depends(rate_limited())):
+    """Deep-dive comparative analysis between old criminal law and new 2024 statutes."""
+    client = state.get("groq_client")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+    from bns_lens import analyze_transition_with_llm
+    return analyze_transition_with_llm(req.query, groq_client=client)
+
+
+# ─── Scan My Notice / Contract Analyzer ─────────────────────────────────────
+
+@app.post("/analyze-document")
+async def analyze_document_upload(
+    file: UploadFile = File(...),
+    _rl: None = Depends(rate_limited()),
+):
+    """Scan and analyze an uploaded legal notice, contract, or agreement (PDF/TXT)."""
+    client = state.get("groq_client")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+
+    content = await file.read()
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (limit: 15MB)")
+
+    from document_analyzer import extract_text_from_file_bytes, analyze_legal_document
+    extracted_text = extract_text_from_file_bytes(content, file.filename or "doc.pdf")
+    if not extracted_text:
+        raise HTTPException(status_code=400, detail="Could not extract readable text from document.")
+
+    return analyze_legal_document(extracted_text, filename=file.filename or "notice.pdf", groq_client=client)
+
 
 
 

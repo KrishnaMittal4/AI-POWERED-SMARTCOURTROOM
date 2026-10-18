@@ -350,6 +350,7 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
       }
       const data = await res.json()
       setResult(data)
+      playGavelSound()
     } catch (err) {
       setError(err.message)
     } finally {
@@ -813,6 +814,15 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
                   title="Export official Certified Court Decree and Print/Save as PDF"
                 >
                   📜 Certified Decree
+                </button>
+
+                <button
+                  type="button"
+                  className="btn-quiet small"
+                  onClick={() => playGavelSound()}
+                  title="Sound the judicial gavel"
+                >
+                  🔨 Strike Gavel
                 </button>
 
                 <button type="button" className="btn-quiet small" onClick={handleCopyTranscript}>

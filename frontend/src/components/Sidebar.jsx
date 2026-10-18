@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { timeAgo, tabKeys } from '../lib/utils.js'
 
-export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose, appMode, onGlobal, onCases, onMoot, onDraft, globalCorpusAvailable=false, onUploadResearch }) {
+export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave, onDelete, onClear, open, onClose, appMode, onGlobal, onCases, onMoot, onDraft, onBnsLens, onScanNotice, globalCorpusAvailable=false, onUploadResearch }) {
   const [tab, setTab] = useState('recent')
   const [filter, setFilter] = useState('')
 
@@ -14,13 +14,19 @@ export default function Sidebar({ history, activeId, onOpen, onNew, onToggleSave
 
   return (
     <aside id="sidebar" className={`sidebar ${open ? 'open' : ''}`} aria-label="Research history">
-      {appMode === 'research' && <nav className="advocate-nav" aria-label="Advocate workspace">
-        <span className="side-label">ADVOCATE WORKSPACE</span>
-        <button onClick={()=>{(globalCorpusAvailable ? onGlobal : onUploadResearch)?.();onClose()}}>⌕ <span>{globalCorpusAvailable ? 'Global Research' : 'Document Research'}</span></button>
-        <button onClick={()=>{onCases?.();onClose()}}>▣ <span>My Cases</span></button>
-        <button onClick={()=>{onMoot?.();onClose()}}>⚖ <span>Moot Court</span></button>
+      <nav className="advocate-nav" aria-label="Workspace tools">
+        <span className="side-label">{appMode === 'citizen' ? 'CITIZEN LEGAL TOOLS' : 'ADVOCATE WORKSPACE'}</span>
+        {appMode === 'research' && (
+          <>
+            <button onClick={()=>{(globalCorpusAvailable ? onGlobal : onUploadResearch)?.();onClose()}}>⌕ <span>{globalCorpusAvailable ? 'Global Research' : 'Document Research'}</span></button>
+            <button onClick={()=>{onCases?.();onClose()}}>▣ <span>My Cases</span></button>
+            <button onClick={()=>{onMoot?.();onClose()}}>⚖ <span>Moot Court</span></button>
+          </>
+        )}
+        <button onClick={()=>{onBnsLens?.();onClose()}}>⚖️ <span>BNS ↔ IPC Lens</span></button>
+        <button onClick={()=>{onScanNotice?.();onClose()}}>📄 <span>Scan Notice / Contract</span></button>
         <button onClick={()=>{onDraft?.();onClose()}}>✎ <span>Legal Drafting</span></button>
-      </nav>}
+      </nav>
       <span className="side-label">RESEARCH</span>
       <button className="new-btn" onClick={() => { (globalCorpusAvailable ? onNew : onUploadResearch)?.(); onClose() }}>
         <span>＋</span>

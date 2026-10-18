@@ -14,6 +14,8 @@ import VoiceInput from './components/VoiceInput.jsx'
 import CaseWorkspace from './components/CaseWorkspace.jsx'
 import CasesDashboard from './components/CasesDashboard.jsx'
 import RagLab from './components/RagLab.jsx'
+import BnsLensModal from './components/BnsLensModal.jsx'
+import ScanNoticeModal from './components/ScanNoticeModal.jsx'
 import { loadHistory, saveHistory, summarize, streamQuery } from './lib/utils.js'
 import { apiFetch } from './lib/auth.js'
 
@@ -76,6 +78,7 @@ export default function App({ user, onLogout }) {
   const [appMode, setAppMode] = useLocal('smart-courtroom:appMode', 'research')
   const [citizenResult, setCitizenResult] = useState(null)
   const [citizenLoading, setCitizenLoading] = useState(false)
+  const [citizenLang, setCitizenLang] = useState('en')
   const [citizenDraftOpen, setCitizenDraftOpen] = useState(false)
   const [draftPrefill, setDraftPrefill] = useState(null)
   const [uploading, setUploading] = useState(false)
@@ -85,6 +88,8 @@ export default function App({ user, onLogout }) {
   const [existingJudgments, setExistingJudgments] = useState(new Set())
   const [replaceExisting, setReplaceExisting] = useState(false)
   const [mootOpen, setMootOpen] = useState(false)
+  const [bnsLensOpen, setBnsLensOpen] = useState(false)
+  const [scanNoticeOpen, setScanNoticeOpen] = useState(false)
   const [casesOpen, setCasesOpen] = useState(false)
   const [mootQuery, setMootQuery] = useState('')
   const [quickPdfUploading, setQuickPdfUploading] = useState(false)
@@ -417,7 +422,7 @@ export default function App({ user, onLogout }) {
     }
   }, [useStreaming, runStream, runClassic, researchSource, globalCorpusAvailable, activeCaseId])
 
-  async function runCitizenAdvice(incidentText) {
+  async function runCitizenAdvice(incidentText, lang = citizenLang) {
     setCitizenLoading(true)
     setError(null)
     setCitizenResult(null)
@@ -426,7 +431,7 @@ export default function App({ user, onLogout }) {
       const res = await apiFetch(`${API_BASE}/citizen-advice`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ incident: incidentText }),
+        body: JSON.stringify({ incident: incidentText, lang }),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
@@ -545,6 +550,8 @@ export default function App({ user, onLogout }) {
             <button className={appMode==='research'?'active':''} onClick={()=>{setAppMode('research');setCitizenResult(null);setActiveCaseId('');setCasesOpen(false)}}>Advocate Research</button>
             <button className={appMode==='citizen'?'active':''} onClick={()=>{setAppMode('citizen');setActiveCaseId('');setCasesOpen(false);setError(null)}}>Citizen Advisor</button>
           </div>
+          <button className="btn-quiet header-tool-btn" onClick={() => setBnsLensOpen(true)} title="BNS ↔ IPC Cross-Reference Lens">⚖️ BNS Lens</button>
+          <button className="btn-quiet header-tool-btn" onClick={() => setScanNoticeOpen(true)} title="Scan & Analyze Legal Notice or Contract">📄 Scan Notice</button>
           <input type="file" ref={fileInputRef} onChange={(e)=>stageJudgments(e.target.files)} multiple accept=".pdf" style={{display:'none'}} />
           <div className="health-wrap"><button className={`status ${health.state}`} onClick={()=>setHealthOpen(v=>!v)} title="System status"><i aria-hidden="true" />{health.state==='ok'?'System':health.state==='down'?'Offline':'Connecting'}</button>{healthOpen&&<div className="health-popover"><b>LEXAI System</b><div><span>Legal Knowledge Base</span><strong className={health.state==='ok'?'ok':'warn'}>{health.state==='ok'?'Indexed & Ready':'Unavailable'}</strong></div><div><span>Groq</span><strong className={health.providers?.groq?.configured?'ok':'warn'}>{health.providers?.groq?.configured?'Configured':'Not configured'}</strong></div><div><span>Gemini</span><strong className={health.providers?.gemini?.configured&&health.providers?.gemini?.sdk_available?'ok':'warn'}>{health.providers?.gemini?.configured?(health.providers?.gemini?.sdk_available?'Configured':'SDK issue'):'Not configured'}</strong></div><small>Health view does not consume provider quota.</small></div>}</div>
           <div className="user-chip" title={user.email}><span className="user-avatar">{(user.name || user.email).charAt(0).toUpperCase()}</span><span className="user-chip-text"><b>{user.name}</b><small>{user.email}</small></span></div>
@@ -580,6 +587,8 @@ export default function App({ user, onLogout }) {
           onCases={()=>{setAppMode('research');setActiveCaseId('');setCasesOpen(true);setActiveId(null);setCitizenResult(null)}}
           onMoot={()=>{setMootQuery(question||'');setMootOpen(true)}}
           onDraft={()=>{setDraftPrefill(null);setCitizenDraftOpen(true)}}
+          onBnsLens={()=>setBnsLensOpen(true)}
+          onScanNotice={()=>setScanNoticeOpen(true)}
         />
         {menu && <div className="scrim" onClick={() => setMenu(false)} />}
 
@@ -875,6 +884,12 @@ export default function App({ user, onLogout }) {
           {citizenResult && !citizenLoading && (
             <CitizenAdviceView
               advice={citizenResult}
+              lang={citizenLang}
+              onChangeLang={(newLang) => {
+                setCitizenLang(newLang)
+                if (question.trim().length >= 3) runCitizenAdvice(question.trim(), newLang)
+              }}
+              onOpenScanNotice={() => setScanNoticeOpen(true)}
               onOpenDraft={(draft) => {
                 setDraftPrefill({
                   draftType: draft?.type || 'legal_notice_recovery',
@@ -915,6 +930,18 @@ export default function App({ user, onLogout }) {
         isOpen={mootOpen}
         onClose={() => setMootOpen(false)}
         initialQuery={mootQuery}
+      />
+      <BnsLensModal
+        open={bnsLensOpen}
+        onClose={() => setBnsLensOpen(false)}
+      />
+      <ScanNoticeModal
+        open={scanNoticeOpen}
+        onClose={() => setScanNoticeOpen(false)}
+        onOpenDraft={(prefill) => {
+          setDraftPrefill(prefill)
+          setCitizenDraftOpen(true)
+        }}
       />
       <DraftModal
         isOpen={citizenDraftOpen}

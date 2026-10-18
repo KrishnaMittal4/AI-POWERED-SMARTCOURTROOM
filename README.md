@@ -21,8 +21,35 @@ PDFs -> extract/clean -> chunk (180 words, 40 overlap) + metadata header
 | Intelligence | Precedent status badge, ratio/obiter extraction, court-draft templates | `legal_intelligence.py` |
 | Similar cases | `POST /similar`: judgments like a passage or a whole judgment, grouped by document (one row per case, ranked by best-matching passage), no LLM call | `similar_cases.py` |
 | Moot Court Debate | `POST /moot-court`: Multi-agent adversarial courtroom trial: Petitioner (Groq) vs. Respondent (Groq) vs. Presiding Bench (Gemini) with dual FAISS retrieval & ratio formulation | `moot_court.py` |
-| API | FastAPI: `/query`, SSE `/query/stream`, `/feedback`, `/documents`, `/upload`, `/similar`, `/moot-court`, `/precedent/check`, `/analyze/ratio-obiter`, `/draft/*` | `main.py`, `security.py`, `feedback_store.py` |
-| UI | React + Vite: streaming answers, citations coloured by verdict, evidence panel, moot court modal, history, sanitized markdown | `frontend/` |
+| Citizen Legal Advisor | `POST /citizen-advice`: Everyday legal aid engine: applicable Acts/Sections, rights summary, 3-step action roadmap, clickable helplines & portals, PDF export, bilingual support (English/Hindi), audio speech playback | `legal_intelligence.py`, `frontend/src/components/CitizenAdviceView.jsx` |
+| BNS ↔ IPC Transition Lens | `GET /bns-lens/quick`, `POST /bns-lens/analyze`: Cross-reference mapper and comparative analyzer between pre-2024 laws (IPC, CrPC, IEA) and 2024 New Criminal Laws (BNS, BNSS, BSA) | `bns_lens.py`, `frontend/src/components/BnsLensModal.jsx` |
+| Scan Notice / Contract | `POST /analyze-document`: Upload PDF/TXT notice or contract to automatically red-flag unfair clauses, extract response deadlines, and prefill a 1-click counter-reply notice | `document_analyzer.py`, `frontend/src/components/ScanNoticeModal.jsx` |
+| Court Audio Engine | Procedural double-strike wooden gavel sound (Web Audio API) and multi-lingual Text-to-Speech legal advice playback | `frontend/src/lib/courtAudio.js` |
+| API | FastAPI: `/query`, SSE `/query/stream`, `/citizen-advice`, `/bns-lens/*`, `/analyze-document`, `/feedback`, `/documents`, `/upload`, `/similar`, `/moot-court`, `/draft/*` | `main.py`, `security.py`, `feedback_store.py` |
+| UI | React + Vite: streaming answers, citations coloured by verdict, evidence panel, moot court modal, BNS lens, notice scanner, history, sanitized markdown | `frontend/` |
+
+## Key Capabilities & Features
+
+### 🛡️ Citizen Legal Advisor
+- **Bilingual Legal Advice**: Toggle seamlessly between English and Hindi (Devanagari script) with natural Text-to-Speech audio readout (`🔊 Listen to Advice`).
+- **3-Step Action Roadmap**: Step-by-step guidance on gathering evidence, serving statutory notice, and filing official complaints, complete with an interactive checklist and progress tracker.
+- **Clickable Helplines & Portals**: Pre-populated emergency contacts (National Cyber Crime 1930, Consumer Helpline 1915, NALSA 15100, e-Daakhil) with direct `tel:` dialing and external portal links.
+- **Official Advisory PDF Exporter**: Instant client-ready formatted PDF report for everyday citizens.
+
+### ⚖️ BNS ↔ IPC & New Criminal Law Transition Lens
+- **July 1, 2024 Transition Mapping**: Side-by-side transition analysis between IPC/CrPC/IEA and Bharatiya Nyaya Sanhita (BNS), Bharatiya Nagarik Suraksha Sanhita (BNSS), and Bharatiya Sakshya Adhiniyam (BSA).
+- **Comparative Analysis**: Instant lookup for critical provisions (IPC 420 ➔ BNS 318(4), IPC 302 ➔ BNS 103, CrPC 154 ➔ BNSS 173 Zero FIR, CrPC 437/439 ➔ BNSS 480/483 Bail, IEA 65B ➔ BSA 61/63 Digital Evidence).
+- **Procedural Impact**: Details changes in police custody, bail, community service punishments, and non-retroactivity under Article 20(1) of the Indian Constitution.
+
+### 📄 "Scan My Notice / Contract" — Document Clause Analyzer
+- **Automatic Red-Flagging**: Drag-and-drop any eviction notice, employment agreement, demand notice (Section 138 NI Act), or contract to detect legally void or coercive clauses (e.g. unlawful deposit forfeiture, punitive liquidated damages, Section 27 Contract Act violations).
+- **Limitation & Response Tracker**: Highlights strict statutory response windows (e.g. 15-day notice period).
+- **1-Click Counter-Notice**: Pre-fills the legal drafting studio with tailored legal defense grounds ready to issue an official rebuttal.
+
+### 🏛️ Smart Moot Court Simulation & Audio Gavel
+- **Multi-Agent Courtroom**: Adversarial simulation pitting Petitioner Counsel against Respondent Counsel with an AI Presiding Bench delivering reasoned judicial decrees.
+- **Procedural Audio**: Authentic wooden gavel strike synthesized via the browser's Web Audio API with zero external audio assets.
+
 
 ## Setup
 

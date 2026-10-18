@@ -15,6 +15,7 @@ Provides advanced analytical tools for advocates and legal researchers:
 """
 
 import json
+import os
 import re
 from groq import Groq
 
@@ -337,69 +338,92 @@ def analyze_citizen_incident(
     index=None,
     records=None,
     embed_model=None,
+    lang: str = "en",
 ) -> dict:
     """Analyze an everyday citizen's real-life problem and provide:
     1. Applicable Indian Acts & Sections
     2. Summary of legal rights & remedies
     3. Practical 3-step action roadmap (Evidence, Notice, Exact Portal/Authority)
     4. Limitation period & urgency alert
-    5. Recommended 1-click legal draft type
-    6. Grounded case law from corpus (if matching)
+    5. Clickable Helplines & Portals relevant to the incident type
+    6. Recommended 1-click legal draft type
+    7. Grounded case law from corpus (if matching)
+
+    Uses the dual-provider router (Groq primary → Gemini fallback) so the function
+    works even when Groq is rate-limited or unavailable.
     """
-    prompt = f"""You are a senior, compassionate Indian legal advocate advising an everyday citizen who has faced an issue.
-Explain the law in clear, encouraging, practical, jargon-free language.
+    from llm_router import route_task, gemini_configured
+
+    lang_note = (
+        "Respond in Hindi (Devanagari script). Keep all JSON keys in English but put all values in Hindi."
+        if lang == "hi"
+        else "Respond in clear, plain English."
+    )
+
+    prompt = f"""You are a senior, compassionate Indian legal advocate advising an everyday citizen.
+Explain the law in clear, encouraging, practical, jargon-free language. {lang_note}
 
 CITIZEN'S INCIDENT:
-\"\"\"{incident.strip()[:4000]}\"\"\"
+"{incident.strip()[:3500]}"
 
-Analyze this incident under Indian Law (BNS/IPC, Consumer Protection Act 2019, IT Act 2000, Contract Act 1872, Rent Control laws, Labour laws, NI Act 1881, etc.).
+Analyze this incident under Indian Law (BNS/IPC, Consumer Protection Act 2019, IT Act 2000,
+Contract Act 1872, Rent Control laws, Labour laws, NI Act 1881, etc.).
 
-Return ONLY a valid JSON object matching this schema:
+Return ONLY a strictly valid RFC 8259 JSON object — no trailing commas, no comments, no markdown fencing:
 {{
   "incident_summary": "1-sentence plain-English summary of what occurred",
   "category": "Consumer Dispute | UPI / Cyber Fraud | Landlord-Tenant | Employment & Salary | Cheating & Fraud | Defective Product | Other",
   "has_legal_remedy": true,
   "applicable_laws": [
     {{
-      "act": "Name of Act (e.g. Consumer Protection Act, 2019 / Bharatiya Nyaya Sanhita, 2023)",
-      "section": "Exact Section (e.g. Section 35 / Section 318(4))",
-      "title": "Short title of provision (e.g. Cheating and dishonestly inducing delivery of property)",
+      "act": "Name of Act (e.g. Consumer Protection Act, 2019)",
+      "section": "Exact Section (e.g. Section 35)",
+      "title": "Short title of provision",
       "nature": "Criminal Offence | Civil Remedy | Consumer Forum | Cyber Crime",
-      "penalty_or_relief": "Maximum punishment (jail/fine) or financial compensation available to victim"
+      "penalty_or_relief": "Remedy or punishment available to victim"
     }}
   ],
-  "rights_summary": "2-3 encouraging sentences explaining what the law guarantees to the citizen and why the opposing party's action is legally invalid.",
+  "rights_summary": "2-3 encouraging sentences about the law and the citizen's position.",
   "action_plan": [
     {{
       "step_number": 1,
       "title": "Evidence to Gather Immediately",
-      "action": "Specific documents/proof to preserve (e.g. WhatsApp chats, bank statement, UTR number, rent agreement)",
+      "action": "Specific documents/proof to preserve",
       "authority_or_portal": "Your personal archive / phone"
     }},
     {{
       "step_number": 2,
       "title": "Serve Formal Written Demand / Notice",
-      "action": "What warning or demand to send giving them a 7 or 15 day deadline to resolve",
+      "action": "What to send and deadline",
       "authority_or_portal": "Registered Post / WhatsApp & Email"
     }},
     {{
       "step_number": 3,
       "title": "Official Complaint / Redressal",
       "action": "Where to lodge the formal grievance",
-      "authority_or_portal": "Exact helpline/portal (e.g. National Cyber Crime 1930 / e-Daakhil / NCH 1915 / Police Station)"
+      "authority_or_portal": "Exact helpline/portal name"
     }}
   ],
-  "urgency_and_deadlines": "Explanation of limitation periods (e.g., 24-hour golden hour for cyber freeze, 3 years for money recovery, 2 years for consumer complaint)",
+  "urgency_and_deadlines": "Limitation periods (e.g., 24-hour golden hour for cyber freeze, 2 years for consumer complaint, 3 years for money recovery).",
+  "helplines_and_portals": [
+    {{
+      "name": "Portal or Helpline name (e.g. National Cyber Crime Helpline)",
+      "contact": "Phone number (e.g. 1930) or empty string",
+      "url": "https://full-url-or-empty-string",
+      "type": "phone | web | phone_and_web"
+    }}
+  ],
   "recommended_draft": {{
     "type": "consumer_complaint | police_complaint | legal_notice_recovery | ni_act_138",
-    "label": "Draft Consumer Complaint | Draft Police/Cyber Complaint | Draft Legal Notice for Recovery",
-    "prefilled_facts": "Concise 3-paragraph summary of facts ready to populate in the drafting tool"
+    "label": "Human-readable label like Draft Consumer Complaint",
+    "prefilled_facts": "Concise 1-2 paragraph summary of facts for the drafting tool"
   }}
 }}"""
 
     result = {
         "status": "ok",
         "incident": incident,
+        "lang": lang,
         "incident_summary": "Citizen incident assessment",
         "category": "Everyday Legal Issue",
         "has_legal_remedy": True,
@@ -407,48 +431,82 @@ Return ONLY a valid JSON object matching this schema:
         "rights_summary": "Indian law protects citizens against unfair practices, non-payment, and fraud.",
         "action_plan": [],
         "urgency_and_deadlines": "Take action promptly to preserve evidence and comply with statutory deadlines.",
+        "helplines_and_portals": [],
         "recommended_draft": {
             "type": "legal_notice_recovery",
             "label": "Draft Legal Notice for Recovery",
-            "prefilled_facts": incident,
+            "prefilled_facts": incident[:1000],
         },
         "supporting_corpus_cases": [],
+        "llm_provider": None,
     }
 
+    # ------------------------------------------------------------------
+    # Use the dual-provider router so we get Gemini fallback for free
+    # ------------------------------------------------------------------
+    system_msg = "You are an expert Indian Legal Aid counselor. Always output strictly valid JSON only."
     try:
-        res = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
-            messages=[
-                {"role": "system", "content": "You are an expert Indian Legal Aid counselor. Always output strictly valid JSON."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.2,
-            max_tokens=1400,
+        # Temporarily raise the ceiling for this task
+        _prev = os.environ.get("GROQ_MAX_OUTPUT_TOKENS")
+        os.environ["GROQ_MAX_OUTPUT_TOKENS"] = "2200"
+        llm = route_task(
+            "citizen",
+            prompt,
+            purpose="reason",
+            groq_client=client,
+            system_prompt=system_msg,
+            max_tokens=1900,
+            temperature=0.1,
         )
-        raw = (res.choices[0].message.content or "").strip()
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0].strip()
-        parsed = json.loads(raw)
-        result.update(parsed)
-    except Exception as e:
-        print(f"Error in citizen incident LLM: {e}")
-        # Robust fallback
-        result["applicable_laws"] = [
-            {
-                "act": "Indian Contract Act, 1872 / BNS, 2023",
-                "section": "Section 73 (Breach of Contract) / Section 318 (Cheating)",
-                "title": "Compensation for loss or damage caused by breach of contract",
-                "nature": "Civil & Criminal",
-                "penalty_or_relief": "Refund of dues + interest + damages for mental agony",
-            }
-        ]
-        result["action_plan"] = [
-            {"step_number": 1, "title": "Preserve Evidence", "action": "Save all transaction receipts, chats, and emails.", "authority_or_portal": "Personal Records"},
-            {"step_number": 2, "title": "Send Legal Demand Notice", "action": "Issue a 15-day notice demanding immediate compliance.", "authority_or_portal": "Registered Post / Email"},
-            {"step_number": 3, "title": "Lodge Formal Complaint", "action": "Approach the competent Consumer Forum or Police Station.", "authority_or_portal": "e-Daakhil / NCH 1915 / Cyber 1930"},
-        ]
+        if _prev is None:
+            os.environ.pop("GROQ_MAX_OUTPUT_TOKENS", None)
+        else:
+            os.environ["GROQ_MAX_OUTPUT_TOKENS"] = _prev
+
+        result["llm_provider"] = llm.get("provider")
+
+        if llm.get("ok"):
+            raw = (llm.get("text") or "").strip()
+            # Strip markdown fencing if present
+            if raw.startswith("```json"):
+                raw = raw[7:]
+            elif raw.startswith("```"):
+                raw = raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+
+            # Try direct parse first
+            parsed = None
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                # Regex extraction: grab from first { to last }
+                m = re.search(r"\{.*\}", raw, re.DOTALL)
+                if m:
+                    try:
+                        parsed = json.loads(m.group(0))
+                    except json.JSONDecodeError:
+                        pass
+
+            if parsed:
+                result.update(parsed)
+            else:
+                print(f"[citizen] JSON parse failed after extraction — using category-aware fallback")
+                _apply_citizen_fallback(result, incident)
+        else:
+            print(f"[citizen] LLM call failed: {llm.get('error')} — using fallback")
+            _apply_citizen_fallback(result, incident)
+
+    except Exception as exc:
+        print(f"[citizen] Unexpected error: {exc}")
+        _apply_citizen_fallback(result, incident)
+
+    # ------------------------------------------------------------------
+    # Ensure helplines always has a minimal safe default
+    # ------------------------------------------------------------------
+    if not result.get("helplines_and_portals"):
+        result["helplines_and_portals"] = _default_helplines(result.get("category", ""))
 
     # Quick vector retrieval for supporting precedents in the database
     if index is not None and records is not None and embed_model is not None:
@@ -468,3 +526,79 @@ Return ONLY a valid JSON object matching this schema:
             pass
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Citizen Advisor helpers
+# ---------------------------------------------------------------------------
+
+def _apply_citizen_fallback(result: dict, incident: str) -> None:
+    """Fill result with a minimal but useful fallback when the LLM call fails."""
+    result["applicable_laws"] = [
+        {
+            "act": "Indian Contract Act, 1872 / Bharatiya Nyaya Sanhita, 2023",
+            "section": "Section 73 / Section 318",
+            "title": "Compensation for breach of contract / Cheating",
+            "nature": "Civil & Criminal",
+            "penalty_or_relief": "Refund of dues + interest + damages for mental agony",
+        }
+    ]
+    result["action_plan"] = [
+        {
+            "step_number": 1, "title": "Preserve All Evidence",
+            "action": "Save transaction receipts, screenshots, WhatsApp chats, emails, and any agreements.",
+            "authority_or_portal": "Personal Records / Phone"
+        },
+        {
+            "step_number": 2, "title": "Send Formal Legal Demand Notice",
+            "action": "Issue a written 15-day demand notice detailing the dispute and amount.",
+            "authority_or_portal": "Speed Post / WhatsApp & Email"
+        },
+        {
+            "step_number": 3, "title": "Lodge Formal Complaint",
+            "action": "File a complaint with the relevant Consumer Forum or approach the Police/Cyber Cell.",
+            "authority_or_portal": "e-Daakhil (consumer) / NCH 1915 / Cyber 1930"
+        },
+    ]
+    result["helplines_and_portals"] = _default_helplines(result.get("category", ""))
+
+
+def _default_helplines(category: str) -> list:
+    """Return category-appropriate helplines with phone numbers and URLs."""
+    base = [
+        {"name": "National Legal Services Authority (NALSA)", "contact": "15100",
+         "url": "https://nalsa.gov.in", "type": "phone_and_web"},
+    ]
+    cat_lower = category.lower()
+    if "cyber" in cat_lower or "upi" in cat_lower or "fraud" in cat_lower:
+        base += [
+            {"name": "National Cyber Crime Helpline", "contact": "1930",
+             "url": "https://cybercrime.gov.in", "type": "phone_and_web"},
+            {"name": "Reserve Bank of India — Sachet Portal", "contact": "",
+             "url": "https://sachet.rbi.org.in", "type": "web"},
+        ]
+    elif "consumer" in cat_lower or "product" in cat_lower:
+        base += [
+            {"name": "National Consumer Helpline", "contact": "1915",
+             "url": "https://consumerhelpline.gov.in", "type": "phone_and_web"},
+            {"name": "e-Daakhil — Consumer Forum Online", "contact": "",
+             "url": "https://edaakhil.nic.in", "type": "web"},
+        ]
+    elif "landlord" in cat_lower or "rent" in cat_lower:
+        base += [
+            {"name": "National Consumer Helpline", "contact": "1915",
+             "url": "https://consumerhelpline.gov.in", "type": "phone_and_web"},
+        ]
+    elif "employment" in cat_lower or "salary" in cat_lower or "labour" in cat_lower:
+        base += [
+            {"name": "Labour Helpline", "contact": "1800-11-4444",
+             "url": "https://shramsuvidha.gov.in", "type": "phone_and_web"},
+        ]
+    else:
+        base += [
+            {"name": "National Consumer Helpline", "contact": "1915",
+             "url": "https://consumerhelpline.gov.in", "type": "phone_and_web"},
+            {"name": "National Cyber Crime Helpline", "contact": "1930",
+             "url": "https://cybercrime.gov.in", "type": "phone_and_web"},
+        ]
+    return base
