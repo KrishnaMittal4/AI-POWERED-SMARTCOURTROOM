@@ -184,7 +184,7 @@ else:
 @app.middleware("http")
 async def require_signed_in_user(request: Request, call_next):
     path = request.url.path
-    public = path in {"/", "/health", "/docs", "/openapi.json", "/redoc"} or path.startswith("/auth/")
+    public = path in {"/", "/health", "/ping", "/docs", "/openapi.json", "/redoc"} or path.startswith("/auth/")
     if not public and request.method != "OPTIONS":
         try:
             current_user(request)
@@ -378,7 +378,7 @@ def health():
             "storage": {"persistent": bool(supabase_repo.enabled() and supabase_repo.configured()) or not RENDER_FREE_MODE, "mode": "supabase" if supabase_repo.enabled() else ("ephemeral-demo" if RENDER_FREE_MODE else "local"), "supabase": supabase_repo.health()}, "limits": {"max_upload_files": MAX_UPLOAD_FILES, "max_upload_mb": MAX_UPLOAD_MB}, "capabilities": {"global_judgment_corpus": bool(GLOBAL_CORPUS_ENABLED and state.get("index") is not None), "private_case_rag": True, "developer_tools": DEVELOPER_TOOLS_ENABLED, "cross_encoder": bool(state.get("reranker") is not None), "low_memory_mode": LOW_MEMORY_MODE, "ocr": os.getenv("OCR_ENABLED","true").lower() in {"1","true","yes","on"}}, **runtime_diagnostics(len(state.get("records", [])), provider_status())}
 
 
-@app.get("/ping")
+@app.api_route("/ping", methods=["GET", "HEAD"])
 def ping():
     """Ultra-lightweight endpoint for uptime monitors and Vercel warm-up pings.
     Returns instantly without touching state, DB, or AI providers.
