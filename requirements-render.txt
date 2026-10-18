@@ -1,0 +1,34 @@
+# ── Render Free Tier Requirements ──────────────────────────────────────────
+# This file is used INSTEAD of requirements.txt on Render.
+# sentence-transformers (PyTorch ~800 MB) is EXCLUDED — GeminiEmbedder handles
+# all embeddings via the cloud API (gemini-embedding-001, 0 MB RAM).
+#
+# In Render Dashboard → Build Command set to:
+#   pip install -r requirements-render.txt
+# ---------------------------------------------------------------------------
+
+# ── Core RAG pipeline ──────────────────────────────────────────────────────
+pdfplumber>=0.11.0
+faiss-cpu>=1.7.4
+# NO sentence-transformers here — saves 800 MB + 10 min build time
+numpy>=1.26.0
+rank-bm25>=0.2.2
+
+# ── API / web server ───────────────────────────────────────────────────────
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+gunicorn>=22.0.0
+python-multipart>=0.0.9
+
+# ── LLM / AI ───────────────────────────────────────────────────────────────
+groq>=0.9.0
+google-genai>=1.0.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+reportlab>=4.2.0
+
+# ── PDF processing ─────────────────────────────────────────────────────────
+PyMuPDF>=1.24.0
+Pillow>=10.0.0
+# pytesseract excluded — Tesseract system binary not available on Render Free

@@ -1,6 +1,10 @@
 # ── Core RAG pipeline ──────────────────────────────────────────────────────
 pdfplumber>=0.11.0
 faiss-cpu>=1.7.4
+# sentence-transformers is only needed for LOCAL development (MiniLM embeddings).
+# On Render Free Tier, set LEXAI_RENDER_FREE_MODE=true to use GeminiEmbedder instead
+# (zero RAM, zero CPU). Keep this line commented out on Render to avoid installing
+# PyTorch (~800 MB) which causes build OOM and 12-minute build times.
 sentence-transformers>=2.7.0
 numpy>=1.26.0
 rank-bm25>=0.2.2

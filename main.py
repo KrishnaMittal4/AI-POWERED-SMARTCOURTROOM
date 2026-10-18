@@ -371,7 +371,20 @@ def root_status():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "environment": LEXAI_ENV, "render_free_mode": RENDER_FREE_MODE, "storage": {"persistent": bool(supabase_repo.enabled() and supabase_repo.configured()) or not RENDER_FREE_MODE, "mode": "supabase" if supabase_repo.enabled() else ("ephemeral-demo" if RENDER_FREE_MODE else "local"), "supabase": supabase_repo.health()}, "limits": {"max_upload_files": MAX_UPLOAD_FILES, "max_upload_mb": MAX_UPLOAD_MB}, "capabilities": {"global_judgment_corpus": bool(GLOBAL_CORPUS_ENABLED and state.get("index") is not None), "private_case_rag": True, "developer_tools": DEVELOPER_TOOLS_ENABLED, "cross_encoder": bool(state.get("reranker") is not None), "low_memory_mode": LOW_MEMORY_MODE, "ocr": os.getenv("OCR_ENABLED","true").lower() in {"1","true","yes","on"}}, **runtime_diagnostics(len(state.get("records", [])), provider_status())}
+    from rag_pipeline import _USE_GEMINI_EMBED
+    embedding_mode = "gemini-embedding-001" if _USE_GEMINI_EMBED else "all-MiniLM-L6-v2"
+    return {"status": "ok", "environment": LEXAI_ENV, "render_free_mode": RENDER_FREE_MODE,
+            "embedding_mode": embedding_mode,
+            "storage": {"persistent": bool(supabase_repo.enabled() and supabase_repo.configured()) or not RENDER_FREE_MODE, "mode": "supabase" if supabase_repo.enabled() else ("ephemeral-demo" if RENDER_FREE_MODE else "local"), "supabase": supabase_repo.health()}, "limits": {"max_upload_files": MAX_UPLOAD_FILES, "max_upload_mb": MAX_UPLOAD_MB}, "capabilities": {"global_judgment_corpus": bool(GLOBAL_CORPUS_ENABLED and state.get("index") is not None), "private_case_rag": True, "developer_tools": DEVELOPER_TOOLS_ENABLED, "cross_encoder": bool(state.get("reranker") is not None), "low_memory_mode": LOW_MEMORY_MODE, "ocr": os.getenv("OCR_ENABLED","true").lower() in {"1","true","yes","on"}}, **runtime_diagnostics(len(state.get("records", [])), provider_status())}
+
+
+@app.get("/ping")
+def ping():
+    """Ultra-lightweight endpoint for uptime monitors and Vercel warm-up pings.
+    Returns instantly without touching state, DB, or AI providers.
+    Use this URL in UptimeRobot (free) to keep Render from sleeping.
+    """
+    return {"ok": True}
 
 
 class RagRelevanceItem(BaseModel):
