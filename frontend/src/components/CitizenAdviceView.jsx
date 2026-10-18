@@ -132,6 +132,28 @@ export default function CitizenAdviceView({ advice, onOpenDraft, onReset, lang, 
     setCheckedSteps(prev => ({ ...prev, [n]: !prev[n] }))
   }, [])
 
+  const handleShareWhatsApp = () => {
+    const text = [
+      "🛡️ *CITIZEN LEGAL ADVISORY — LEXAI*",
+      `*Issue:* ${advice.incident_summary || advice.incident}`,
+      `*Category:* ${advice.category}`,
+      "",
+      "⚖️ *YOUR LEGAL RIGHTS:*",
+      advice.rights_summary,
+      "",
+      "📋 *RECOMMENDED ACTION STEPS:*",
+      ...(advice.action_plan || []).map(s => `${s.step_number}. *${s.title}*: ${s.action} (Portal: ${s.authority_or_portal})`),
+      "",
+      `⏳ *DEADLINE / URGENCY:* ${advice.urgency_and_deadlines}`,
+      "",
+      "📞 *OFFICIAL HELPLINES:*",
+      ...(advice.helplines_and_portals || []).map(h => `• ${h.name}${h.contact ? " — Call " + h.contact : ""}${h.url ? " — " + h.url : ""}`)
+    ].join("\n")
+
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`
+    window.open(url, "_blank")
+  }
+
   const handleCopy = async () => {
     const text = [
       "CITIZEN LEGAL ADVISORY — LEXAI",
@@ -226,6 +248,14 @@ export default function CitizenAdviceView({ advice, onOpenDraft, onReset, lang, 
           </button>
           <button type="button" className="btn-quiet" onClick={() => exportAdvisoryPDF(advice)}>
             🖨️ Export PDF
+          </button>
+          <button
+            type="button"
+            className="btn-quiet citizen-whatsapp-btn"
+            onClick={handleShareWhatsApp}
+            title="Share this legal advice via WhatsApp"
+          >
+            💬 WhatsApp
           </button>
           <button type="button" className="btn-quiet" onClick={handleCopy}>
             {copied ? "✅ Copied" : "📋 Copy Advice"}

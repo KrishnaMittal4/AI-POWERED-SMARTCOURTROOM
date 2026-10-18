@@ -3094,4 +3094,62 @@ kbd{font-family:ui-monospace,Consolas,monospace;font-size:12px;background:var(--
   padding-top: 14px;
 }
 
+/* ── Sample Notices Bar & Chips ── */
+.scan-samples-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--sunk);
+  border: 1px dashed var(--gold-border);
+  border-radius: var(--r-md);
+  padding: 12px 16px;
+}
+.scan-samples-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.scan-samples-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.scan-sample-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 99px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--fast);
+}
+.scan-sample-chip:hover:not(:disabled) {
+  border-color: var(--gold-border);
+  background: var(--gold-bg);
+  color: var(--gold);
+  transform: translateY(-1px);
+}
+
+/* ── Citizen WhatsApp Share Button ── */
+.citizen-whatsapp-btn {
+  background: rgba(37, 211, 102, 0.12) !important;
+  color: #25d366 !important;
+  border-color: rgba(37, 211, 102, 0.3) !important;
+  font-weight: 700 !important;
+  transition: all var(--fast) !important;
+}
+.citizen-whatsapp-btn:hover {
+  background: rgba(37, 211, 102, 0.22) !important;
+  border-color: #25d366 !important;
+  transform: scale(1.03);
+}
+
 .source-correct-btn.active{border-color:var(--yes);background:var(--yes-bg);color:var(--yes);cursor:default}
+

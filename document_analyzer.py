@@ -1,4 +1,4 @@
-﻿"""Document & Legal Notice Analyzer for Citizens and Advocates.
+"""Document & Legal Notice Analyzer for Citizens and Advocates.
 
 Extracts text from uploaded legal notices, contracts, and agreements (PDF / TXT),
 identifies one-sided or unlawful clauses, calculates response deadlines,
@@ -16,7 +16,39 @@ def extract_text_from_file_bytes(content: bytes, filename: str) -> str:
     fn = filename.lower()
     text = ""
     
-    if fn.endswith(".pdf"):
+    if fn.endswith((".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff")):
+        # Image OCR: Camera photo / scanned paper notice
+        # 1. Try pytesseract first
+        try:
+            from PIL import Image
+            import pytesseract
+            img = Image.open(io.BytesIO(content))
+            text = pytesseract.image_to_string(img)
+        except Exception:
+            pass
+
+        # 2. Vision fallback: Gemini multimodal OCR for zero-dependency transcription
+        if not text.strip():
+            try:
+                import os
+                from google import genai
+                from google.genai import types
+                key = os.getenv("GEMINI_API_KEY")
+                if key:
+                    client = genai.Client(api_key=key)
+                    mime = "image/png" if fn.endswith(".png") else "image/jpeg"
+                    res = client.models.generate_content(
+                        model=os.getenv("GEMINI_EXTRACTION_MODEL", "gemini-2.5-flash-lite"),
+                        contents=[
+                            types.Part.from_bytes(data=content, mime_type=mime),
+                            "Transcribe all readable text from this legal document or notice accurately. Output only the plain transcribed text without commentary."
+                        ]
+                    )
+                    text = (res.text or "").strip()
+            except Exception as e:
+                print(f"[document_analyzer] Image OCR error: {e}")
+
+    elif fn.endswith(".pdf"):
         # Try PyMuPDF (fitz) first for maximum speed and accuracy
         try:
             import fitz

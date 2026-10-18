@@ -1,7 +1,38 @@
-﻿import { useState, useRef } from "react"
+import { useState, useRef } from "react"
 import { apiFetch } from "../lib/auth.js"
 
 const API_BASE = import.meta.env.VITE_API_BASE || import.meta.env.VITE_API_URL || "http://localhost:8000"
+
+const SAMPLE_NOTICES = [
+  {
+    title: "Illegal 3-Day Eviction Notice",
+    filename: "eviction_notice.txt",
+    text: `LEGAL NOTICE FOR IMMEDIATE VACATION OF PREMISES
+Dated: 12th October 2024
+To: Tenant, Flat 402, Green Valley Apartments, New Delhi
+From: Landlord & Property Owner
+
+You are hereby served notice that your tenancy stands terminated immediately. You must vacate the premises within 3 (three) days from receipt of this notice, failing which your entire security deposit of Rs 75,000 shall be permanently forfeited without any refund. Furthermore, you shall be liable to pay penalty damages of Rs 5,000 per day.`
+  },
+  {
+    title: "Unfair 2-Yr Non-Compete Clause",
+    filename: "employment_agreement.txt",
+    text: `CONFIDENTIALITY AND NON-COMPETE COVENANT
+Between: Tech Innovations Pvt Ltd (Company) and Employee
+
+Clause 9.2 (Post-Termination Restraint):
+The Employee agrees that upon cessation of employment for any reason whatsoever, the Employee shall not directly or indirectly engage in, consult for, or establish any competing software business anywhere within India for a strict period of 2 (two) years. Any breach will attract liquidated damages of Rs 10,00,000 without requiring proof of actual loss.`
+  },
+  {
+    title: "Cheque Bounce 15-Day Notice (s.138)",
+    filename: "ni_act_138_notice.txt",
+    text: `STATUTORY DEMAND NOTICE UNDER SECTION 138 NEGOTIABLE INSTRUMENTS ACT, 1881
+Dated: 5th October 2024
+To: M/s Apex Retailers & Partners
+
+Take notice that Cheque No. 448201 dated 15/09/2024 for Rs 2,50,000 drawn on HDFC Bank was returned unpaid by the bank with the memo 'Funds Insufficient'. You are hereby called upon to pay the said sum within 15 days from receipt of this notice, failing which criminal proceedings under Section 138 of the NI Act shall be initiated against you.`
+  }
+]
 
 export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
   const [file, setFile] = useState(null)
@@ -21,14 +52,15 @@ export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
     }
   }
 
-  const handleUploadAndAnalyze = async () => {
-    if (!file) return
+  const uploadAndAnalyzeFile = async (targetFile) => {
+    const fileToUpload = targetFile || file
+    if (!fileToUpload) return
     setAnalyzing(true)
     setError(null)
     setResult(null)
 
     const formData = new FormData()
-    formData.append("file", file)
+    formData.append("file", fileToUpload)
 
     try {
       const res = await apiFetch(`${API_BASE}/analyze-document`, {
@@ -48,6 +80,13 @@ export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
     }
   }
 
+  const handleLoadSample = (sample) => {
+    const blob = new Blob([sample.text], { type: "text/plain" })
+    const sampleFile = new File([blob], sample.filename, { type: "text/plain" })
+    setFile(sampleFile)
+    uploadAndAnalyzeFile(sampleFile)
+  }
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="scan-modal-card" onClick={(e) => e.stopPropagation()}>
@@ -57,7 +96,7 @@ export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
             <span className="scan-badge">📄 Document &amp; Notice Analyzer</span>
             <h2>Scan Legal Notice or Contract</h2>
             <p className="scan-subtitle">
-              Upload an eviction notice, demand letter, employment contract, or challan. Our legal engine red-flags unfair clauses and prepares a counter-notice.
+              Upload an eviction notice, demand letter, employment contract, or camera photo. Our legal engine red-flags unfair clauses and prepares a counter-notice.
             </p>
           </div>
           <button type="button" className="btn-icon" onClick={onClose} aria-label="Close">✕</button>
@@ -65,30 +104,51 @@ export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
 
         {/* Upload Dropzone */}
         {!result && (
-          <div
-            className={`scan-dropzone ${file ? "has-file" : ""}`}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept=".pdf,.txt,.doc,.docx"
-              style={{ display: "none" }}
-            />
-            <div className="dropzone-icon">📥</div>
-            {file ? (
-              <div className="dropzone-file-info">
-                <strong>{file.name}</strong>
-                <span>({(file.size / 1024).toFixed(1)} KB) — Click to choose a different file</span>
+          <>
+            <div
+              className={`scan-dropzone ${file ? "has-file" : ""}`}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                accept=".pdf,.txt,.doc,.docx,.png,.jpg,.jpeg,.webp"
+                style={{ display: "none" }}
+              />
+              <div className="dropzone-icon">📸</div>
+              {file ? (
+                <div className="dropzone-file-info">
+                  <strong>{file.name}</strong>
+                  <span>({(file.size / 1024).toFixed(1)} KB) — Click to choose a different file</span>
+                </div>
+              ) : (
+                <div className="dropzone-prompt">
+                  <strong>Click or drag &amp; drop your Legal Notice, Contract, or Camera Photo</strong>
+                  <span>Supports PDF, Text, and Photos (.jpg, .png) up to 15MB • Eviction letters, Section 138 notices, contracts</span>
+                </div>
+              )}
+            </div>
+
+            {/* Pre-loaded Sample Notices */}
+            <div className="scan-samples-bar">
+              <span className="scan-samples-label">💡 Or test with a real-world sample:</span>
+              <div className="scan-samples-list">
+                {SAMPLE_NOTICES.map((s, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className="scan-sample-chip"
+                    onClick={() => handleLoadSample(s)}
+                    disabled={analyzing}
+                  >
+                    <span>📜</span>
+                    <span>{s.title}</span>
+                  </button>
+                ))}
               </div>
-            ) : (
-              <div className="dropzone-prompt">
-                <strong>Click or drag &amp; drop your Legal Notice / Contract (PDF or Text)</strong>
-                <span>Supports up to 15MB • Eviction letters, Section 138 notices, recovery demands, contracts</span>
-              </div>
-            )}
-          </div>
+            </div>
+          </>
         )}
 
         {file && !result && (
@@ -96,7 +156,7 @@ export default function ScanNoticeModal({ open, onClose, onOpenDraft }) {
             <button
               type="button"
               className="btn-primary large"
-              onClick={handleUploadAndAnalyze}
+              onClick={() => uploadAndAnalyzeFile(file)}
               disabled={analyzing}
             >
               {analyzing ? "⚡ Scanning & Analyzing Legal Clauses..." : "🔍 Analyze Notice & Red-Flags"}
