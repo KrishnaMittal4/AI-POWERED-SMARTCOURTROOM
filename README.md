@@ -79,19 +79,7 @@ The badge on each cited case is **not** a verified citator result unless marked 
   to check a citator.
 - `unknown` (grey, "Status unverified"): not recognised, or the check failed. The tool
   never defaults to "good law".
-
-## Evaluation
-
-```bash
-python eval_pipeline.py          # retrieval metrics + threshold calibration (no LLM calls)
-python eval_pipeline.py --full   # + citation accuracy (uses Groq)
-```
-Latest run (`eval_after_metadata.json`; 38 queries, 31 answerable, 7 unanswerable):
-Precision@3 0.559, MRR 0.839, hit@3 0.839. At threshold 0.54, 6 of 7 unanswerable queries
-are refused and 0 answerable ones are wrongly refused. The earlier 8-query A/B
-(`minilm_baseline.json` vs `inlegalbert_baseline.json`) is why `all-MiniLM-L6-v2` is the
-embedding model (P@3 0.571 vs 0.286). The eval set is small, so treat these as indicative.
-
+  
 ## Deployment (Render backend + Vercel frontend)
 
 `render.yaml` deploys the backend on Render's free tier (512 MB RAM) using the small
