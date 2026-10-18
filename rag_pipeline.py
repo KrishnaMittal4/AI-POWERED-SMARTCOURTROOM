@@ -60,14 +60,153 @@ CHUNK_OVERLAP_WORDS = 40      # overlap so context isn't cut mid-idea
 # is the only change needed anywhere in the project if this is revisited.
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 
+# ---------------------------------------------------------------------------
+# GEMINI EMBEDDER — Zero-RAM cloud embedding for Render Free Tier
+# ---------------------------------------------------------------------------
+# Activated automatically when LEXAI_RENDER_FREE_MODE=true OR GEMINI_EMBEDDING=true.
+# Has the exact same .encode() interface as SentenceTransformer, so every
+# caller (private_case_rag, moot_court, generate_answer, etc.) works unchanged.
+# ---------------------------------------------------------------------------
+
+class GeminiEmbedder:
+    """Drop-in SentenceTransformer replacement that calls Google's
+    text-embedding-004 API. Uses 0 MB RAM and 0 CPU on the Render server.
+
+    Dimensions: 768 (vs 384 for MiniLM). FAISS indexes built with this
+    embedder are saved under model_name='gemini-text-embedding-004' so
+    they are never confused with MiniLM indexes.
+    """
+
+    MODEL = "gemini-embedding-001"   # Confirmed working — 3072 dims
+    DIM = 3072
+    BATCH_API = 100   # max texts per Gemini embed call
+
+    def __init__(self):
+        import os
+        self._key = os.getenv("GEMINI_API_KEY", "")
+        if not self._key:
+            raise RuntimeError(
+                "GeminiEmbedder requires GEMINI_API_KEY to be set. "
+                "Get a free key at https://aistudio.google.com/app/apikey"
+            )
+        from google import genai
+        self._client = genai.Client(api_key=self._key)
+        print(f"GeminiEmbedder ready — model={self.MODEL}, dim={self.DIM} (cloud, 0 RAM)")
+
+    # ------------------------------------------------------------------
+    # Public interface — matches SentenceTransformer.encode() signature
+    # ------------------------------------------------------------------
+    def encode(
+        self,
+        sentences,
+        *,
+        batch_size: int = 64,
+        show_progress_bar: bool = False,
+        convert_to_numpy: bool = True,
+        normalize_embeddings: bool = True,
+        **_kwargs,
+    ):
+        """Embed a list of strings via Gemini text-embedding-004.
+
+        Returns a numpy float32 array of shape (N, 768), matching the
+        output contract of SentenceTransformer.encode().
+        """
+        import numpy as np
+        import time
+
+        if isinstance(sentences, str):
+            sentences = [sentences]
+
+        all_embeddings = []
+        # Split into API-safe batches
+        for i in range(0, len(sentences), self.BATCH_API):
+            batch = sentences[i : i + self.BATCH_API]
+            batch_vecs = self._embed_batch_with_retry(batch)
+            all_embeddings.extend(batch_vecs)
+
+        arr = np.array(all_embeddings, dtype="float32")
+
+        if normalize_embeddings:
+            # L2-normalize each row so cosine sim == dot product (same as MiniLM)
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            arr = arr / norms
+
+        return arr
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _embed_batch_with_retry(self, texts: list, retries: int = 3) -> list:
+        """Call the Gemini embed API with simple exponential backoff."""
+        import time
+        from google.genai import types
+
+        last_err = None
+        for attempt in range(retries):
+            try:
+                response = self._client.models.embed_content(
+                    model=self.MODEL,
+                    contents=texts,
+                    config=types.EmbedContentConfig(
+                        task_type="RETRIEVAL_DOCUMENT",
+                    ),
+                )
+                # response.embeddings is a list of ContentEmbedding objects
+                return [e.values for e in response.embeddings]
+            except Exception as exc:
+                last_err = exc
+                err_str = str(exc).lower()
+                # Retry on transient errors only
+                if any(m in err_str for m in ("429", "rate", "503", "timeout", "unavailable")):
+                    wait = (2 ** attempt) * 0.5  # 0.5s, 1s, 2s
+                    print(f"GeminiEmbedder: transient error on attempt {attempt+1}, retrying in {wait}s: {exc}")
+                    time.sleep(wait)
+                else:
+                    break  # Non-transient — don't retry
+        raise RuntimeError(f"GeminiEmbedder failed after {retries} attempts: {last_err}")
+
+    def query_encode(self, text: str) -> "np.ndarray":
+        """Encode a single query string with RETRIEVAL_QUERY task type for
+        slightly better retrieval accuracy. Falls back to encode() if error."""
+        import numpy as np
+        try:
+            from google.genai import types
+            response = self._client.models.embed_content(
+                model=self.MODEL,
+                contents=[text],
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY",
+                ),
+            )
+            arr = np.array([response.embeddings[0].values], dtype="float32")
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1.0, norms)
+            return arr / norms
+        except Exception:
+            return self.encode([text])
+
+
+_USE_GEMINI_EMBED = (
+    os.environ.get("GEMINI_EMBEDDING", "").strip().lower() in {"1", "true", "yes", "on"}
+    or os.environ.get("LEXAI_RENDER_FREE_MODE", "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 
 def load_embedding_model(model_name: str = EMBEDDING_MODEL_NAME):
-    """Single place that decides HOW to load an embedding model, so
-    swapping EMBEDDING_MODEL_NAME is the only change needed anywhere in
-    the project -- rag_pipeline.py, main.py, generate_answer.py, and
-    eval_pipeline.py should all call this instead of instantiating
-    SentenceTransformer directly.
+    """Single place that decides HOW to load an embedding model.
+
+    • On Render Free Tier (LEXAI_RENDER_FREE_MODE=true) or when
+      GEMINI_EMBEDDING=true: returns GeminiEmbedder — zero RAM, zero CPU,
+      calls text-embedding-004 via the cloud.
+
+    • Locally (default): returns SentenceTransformer(all-MiniLM-L6-v2)
+      for offline-capable fast embedding.
+
+    All callers use .encode() so this switch is completely transparent.
     """
+    if _USE_GEMINI_EMBED and os.environ.get("GEMINI_API_KEY"):
+        return GeminiEmbedder()
     from sentence_transformers import SentenceTransformer
     return SentenceTransformer(model_name)
 

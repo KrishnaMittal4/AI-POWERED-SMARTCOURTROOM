@@ -6,7 +6,7 @@ import json, os, re, shutil, threading
 from pathlib import Path
 import numpy as np
 from fastapi import HTTPException
-from rag_pipeline import clean_text, chunk_text, build_faiss_index, save_index, load_index, search, load_embedding_model
+from rag_pipeline import clean_text, chunk_text, build_faiss_index, save_index, load_index, search, load_embedding_model, GeminiEmbedder
 from ocr_extraction import extract_pdf_pages
 from generate_answer import generate_answer, _source_out
 from citation_verification import verify_answer
@@ -94,7 +94,9 @@ def build_case_index(user_id:int, case_id:str, embed_model):
     texts=[r['text'] for r in records]
     vec=np.asarray(embed_model.encode(texts,batch_size=64,show_progress_bar=False,convert_to_numpy=True,normalize_embeddings=True)).astype('float32')
     idx=build_faiss_index(vec); base,_=_paths(user_id,case_id); base.mkdir(parents=True,exist_ok=True)
-    save_index(idx,records,'all-MiniLM-L6-v2',str(base))
+    # Save correct model name so Gemini/MiniLM indexes are never confused
+    saved_model_name = "gemini-embedding-001" if isinstance(embed_model, GeminiEmbedder) else "all-MiniLM-L6-v2"
+    save_index(idx,records,saved_model_name,str(base))
     if sb.enabled():
         try: sb.replace_case_chunks(user_id,case_id,records)
         except Exception as e: print(f'Supabase chunk persistence warning: {e}')
