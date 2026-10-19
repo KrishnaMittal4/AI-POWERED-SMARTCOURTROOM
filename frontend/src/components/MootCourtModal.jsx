@@ -772,6 +772,25 @@ export default function MootCourtModal({ isOpen, onClose, initialQuery = '' }) {
                 }}>
                   Prevailing: <strong style={{ color: dispColor }}>{result.bench.prevailing_party}</strong>
                 </span>
+                {result.graph_execution && (
+                  <span
+                    style={{
+                      fontSize: '11.5px',
+                      fontWeight: 700,
+                      padding: '3px 10px',
+                      borderRadius: '99px',
+                      background: 'rgba(99, 102, 241, 0.12)',
+                      border: '1px solid rgba(99, 102, 241, 0.3)',
+                      color: '#818cf8',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                    title={`Orchestrated by ${result.graph_execution.orchestrator}: ${result.graph_execution.nodes_executed?.join(' → ')}`}
+                  >
+                    🕸️ LangGraph StateGraph
+                  </span>
+                )}
                 {result.mode === 'human_vs_ai' && (
                   <span style={{
                     fontSize: '11.5px',

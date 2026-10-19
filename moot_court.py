@@ -101,12 +101,28 @@ def run_moot_court_debate(
     records: list = None,
     embed_model=None,
     groq_client: Groq = None,
+    use_graph: bool = True,
 ) -> dict:
     """
-    Executes a 3-stage adversarial debate on the given legal dispute / facts.
+    Executes an adversarial courtroom debate.
+    Uses LangGraph StateGraph orchestration by default, falling back to
+    imperative execution if needed.
     """
     if not groq_client and not gemini_configured():
         raise ValueError("Configure GEMINI_API_KEY or GROQ_API_KEY for Moot Court.")
+
+    if use_graph:
+        try:
+            from graphs.moot_court_graph import run_moot_court_graph
+            return run_moot_court_graph(
+                dispute=dispute,
+                index=index,
+                records=records,
+                embed_model=embed_model,
+                groq_client=groq_client,
+            )
+        except Exception as e:
+            logger.warning("LangGraph Moot Court execution error, proceeding with procedural fallback: %s", e)
 
     # 1. Dual Retrieval from FAISS (0 LLM cost)
     petitioner_passages = _retrieve_for_perspective(

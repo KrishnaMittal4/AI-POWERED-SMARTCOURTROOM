@@ -19,8 +19,8 @@ PDFs / Images -> extract/clean/OCR -> chunk (180 words, 40 overlap) + metadata h
 | Answer | `openai/gpt-oss-120b` or `qwen/qwen3.8-27b` on Groq, temperature 0.2, strict "only these passages, only these case names" prompt | `generate_answer.py`, `llm_router.py` |
 | Verify | Per cited case: exists in corpus, case number matches, passage supports the claim (Groq judge, optional Gemini cross-check; disagreement shows as "disputed"). Citation-shaped text matching no corpus case is flagged | `citation_verification.py` |
 | Intelligence | Precedent status badge, ratio/obiter extraction, court-draft templates, issue mapping | `legal_intelligence.py`, `case_engine.py` |
-| Similar cases | `POST /similar`: judgments like a passage or a whole judgment, grouped by document (one row per case, ranked by best-matching passage), no LLM call | `similar_cases.py` |
-| Moot Court Debate | `POST /moot-court`: Multi-agent adversarial courtroom trial: Petitioner (Groq) vs. Respondent (Groq) vs. Presiding Bench (Gemini) with dual FAISS retrieval & ratio formulation | `moot_court.py` |
+| Moot Court Debate | `POST /moot-court`, `POST /moot-court/graph`: Multi-agent adversarial courtroom trial: Petitioner (Groq) vs. Respondent (Groq) vs. Presiding Bench (Gemini) orchestrated via **LangGraph StateGraph** with dual FAISS retrieval & ratio formulation | `moot_court.py`, `graphs/moot_court_graph.py` |
+| Corrective RAG (CRAG) | `POST /query/graph`, `POST /query`: **LangGraph Evaluator-Optimizer** self-correction graph: query expansion $\to$ hybrid retrieval $\to$ evidence grading $\to$ generation $\to$ citation verification $\to$ reflection critique loop on hallucination | `graphs/rag_graph.py`, `main.py` |
 | Citizen Legal Advisor | `POST /citizen-advice`: Everyday legal aid engine: applicable Acts/Sections, rights summary, 3-step action roadmap, clickable helplines & portals, PDF export, bilingual support (English/Hindi), TTS audio speech playback, 1-click WhatsApp share | `legal_intelligence.py`, `frontend/src/components/CitizenAdviceView.jsx` |
 | BNS ↔ IPC Transition Lens | `GET /bns-lens/quick`, `POST /bns-lens/analyze`: Cross-reference mapper and comparative analyzer between pre-2024 laws (IPC, CrPC, IEA) and 2024 New Criminal Laws (BNS, BNSS, BSA) | `bns_lens.py`, `frontend/src/components/BnsLensModal.jsx` |
 | Scan Notice / Contract | `POST /analyze-document`: Upload PDF/TXT or camera photo image (JPG/PNG), or load pre-built sample notices to red-flag unfair clauses, extract response deadlines, and prefill a 1-click counter-reply notice | `document_analyzer.py`, `frontend/src/components/ScanNoticeModal.jsx` |
@@ -90,6 +90,28 @@ cd frontend && npm install && npm run dev    # UI at http://localhost:5173
 ```
 The UI reads `VITE_API_BASE` (see `frontend/.env.example`) and falls back to
 `http://localhost:8000`.
+
+## 🕸️ LangGraph Multi-Agent & StateGraph Architecture
+
+The repository incorporates native **LangGraph** (`langgraph.graph.StateGraph`) to orchestrate complex stateful agentic workflows across isolated, verifiable steps:
+
+### 1. Adversarial AI Moot Court Graph (`graphs/moot_court_graph.py`)
+Models a legal trial bench as a stateful graph where each participant modifies the courtroom state:
+* **Dual Retrieval Node**: Dual-perspective FAISS vector retrieval for prosecution vs. defense propositions.
+* **Petitioner Counsel Node**: Senior counsel agent citing statutory sections and supporting precedents.
+* **Respondent Counsel Node**: Rebuttal agent distinguishing citations and establishing defenses.
+* **Presiding Bench Node**: Judicial adjudication agent delivering ratio decidendi, disposition, and party outcome.
+* **Endpoints**: `POST /moot-court` (default graph enabled) and `POST /moot-court/graph`.
+
+### 2. Corrective Legal RAG (CRAG) & Self-Correction Loop (`graphs/rag_graph.py`)
+Implements an **Evaluator-Optimizer** pattern for high-stakes legal QA:
+* **Query Analysis**: Legal HyDE query rewriting for statutory clarity.
+* **Hybrid Retrieval**: Dual Dense (FAISS) + Sparse (BM25) fused with Reciprocal Rank Fusion (RRF) and Cross-Encoder re-ranking.
+* **Evidence Grading**: Calibrated guardrail ensuring queries below threshold do not hallucinate.
+* **Answer Generation**: Structured legal formulation citing only verified authorities.
+* **Citation Verifier**: Deep audit node validating every case citation against the physical corpus.
+* **Self-Correction Reflection Loop**: When hallucinated or unverifiable citations are flagged, the graph formulates an architectural critique and loops back to regenerate the answer within a bounded retry limit.
+* **Endpoints**: `POST /query/graph` and `POST /query` (with `use_graph: true`).
 
 ## When the corpus does not cover a question
 

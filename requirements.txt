@@ -18,6 +18,7 @@ python-multipart>=0.0.9   # needed for UploadFile support in FastAPI
 # ── LLM / AI ───────────────────────────────────────────────────────────────
 groq>=0.9.0
 google-genai>=1.0.0
+langgraph>=0.2.0
 
 # ── Utilities ─────────────────────────────────────────────────────────────
 python-dotenv>=1.0.0

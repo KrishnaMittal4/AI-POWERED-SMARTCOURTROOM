@@ -342,6 +342,7 @@ class QueryRequest(BaseModel):
     question: str = Field(..., min_length=3, max_length=1000, description="The legal question to ask")
     top_k: int = Field(3, ge=1, le=10, description="Number of passages to retrieve")
     verify: bool = Field(True, description="Whether to run citation verification")
+    use_graph: bool = Field(False, description="Whether to use LangGraph StateGraph Corrective RAG with citation self-correction")
 
 
 class SourceOut(BaseModel):
@@ -362,6 +363,7 @@ class QueryResponse(BaseModel):
     threshold: float | None = None  # MIN_RETRIEVAL_SCORE in force
     weak_match: bool = False     # answered, but best score was below WEAK_RETRIEVAL_SCORE
     rewritten_query: str | None = None  # the LLM-rewritten search query (if different from original)
+    graph_execution: dict | None = None  # LangGraph node trace and metadata if graph mode was used
 
 
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
@@ -519,6 +521,20 @@ def query_general(req: QueryRequest, _rl: None = Depends(rate_limited())):
 def query(req: QueryRequest, _rl: None = Depends(rate_limited())):
     _require_global_corpus()
 
+    if req.use_graph:
+        from graphs.rag_graph import run_legal_rag_graph
+        return run_legal_rag_graph(
+            query=req.question,
+            index=state["index"],
+            records=state["records"],
+            embed_model=state["embed_model"],
+            client=state["groq_client"],
+            top_k=req.top_k,
+            verify=req.verify,
+            rerank=state.get("reranker") is not None,
+            reranker_model=state.get("reranker"),
+        )
+
     result = answer_query(
         query=req.question,
         index=state["index"],
@@ -531,6 +547,26 @@ def query(req: QueryRequest, _rl: None = Depends(rate_limited())):
         reranker_model=state.get("reranker"),
     )
     return result
+
+
+@app.post("/query/graph", response_model=QueryResponse)
+def query_graph(req: QueryRequest, _rl: None = Depends(rate_limited())):
+    """Executes the Corrective Legal RAG (CRAG) workflow orchestrated via LangGraph StateGraph,
+    including an Evaluator-Optimizer feedback loop for citation self-correction.
+    """
+    _require_global_corpus()
+    from graphs.rag_graph import run_legal_rag_graph
+    return run_legal_rag_graph(
+        query=req.question,
+        index=state["index"],
+        records=state["records"],
+        embed_model=state["embed_model"],
+        client=state["groq_client"],
+        top_k=req.top_k,
+        verify=req.verify,
+        rerank=state.get("reranker") is not None,
+        reranker_model=state.get("reranker"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1212,6 +1248,7 @@ def case_moot(case_id: str, req: CaseMootRequest, user: dict = Depends(current_u
 
 class MootCourtRequest(BaseModel):
     dispute: str = Field(..., min_length=10, max_length=4000, description="Legal proposition or case facts to debate")
+    use_graph: bool = Field(True, description="Whether to orchestrate the debate via LangGraph StateGraph multi-agent workflow")
 
 
 @app.post("/moot-court")
@@ -1219,7 +1256,7 @@ def simulate_moot_court(
     req: MootCourtRequest,
     _rl: None = Depends(rate_limited("moot", "MOOT_RATE_PER_MIN", "MOOT_RATE_PER_DAY", 6, 100, use_global=False)),
 ):
-    """Run an adversarial moot court debate: Petitioner (Groq) vs Respondent (Groq) vs Bench (Gemini)."""
+    """Run an adversarial moot court debate: Petitioner (Groq) vs Respondent (Groq) vs Bench (Gemini) orchestrated via LangGraph StateGraph."""
     client = state.get("groq_client")
     if not client and not gemini_configured():
         raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
@@ -1233,9 +1270,35 @@ def simulate_moot_court(
             records=state["records"],
             embed_model=state["embed_model"],
             groq_client=client,
+            use_graph=req.use_graph,
         )
     except Exception as e:
         logger.error(f"Moot court debate failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Moot court simulation failed: {str(e)}")
+
+
+@app.post("/moot-court/graph")
+def simulate_moot_court_graph(
+    req: MootCourtRequest,
+    _rl: None = Depends(rate_limited("moot", "MOOT_RATE_PER_MIN", "MOOT_RATE_PER_DAY", 6, 100, use_global=False)),
+):
+    """Explicit endpoint to execute the LangGraph StateGraph multi-agent courtroom debate."""
+    client = state.get("groq_client")
+    if not client and not gemini_configured():
+        raise HTTPException(status_code=503, detail="Configure GEMINI_API_KEY or GROQ_API_KEY")
+    if state.get("index") is None:
+        raise HTTPException(status_code=503, detail="Moot court simulation requires the global judgment corpus, which is not enabled in this deployment.")
+    try:
+        from graphs.moot_court_graph import run_moot_court_graph
+        return run_moot_court_graph(
+            dispute=req.dispute,
+            index=state["index"],
+            records=state["records"],
+            embed_model=state["embed_model"],
+            groq_client=client,
+        )
+    except Exception as e:
+        logger.error(f"LangGraph Moot court execution failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Moot court simulation failed: {str(e)}")
 
 
