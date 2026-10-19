@@ -4,29 +4,30 @@ A research tool over Indian court judgments. Every answer is written **only from
 retrieved passages**, then every case it names is checked against the source text.
 
 ```
-PDFs -> extract/clean -> chunk (180 words, 40 overlap) + metadata header
-     -> MiniLM embeddings (FAISS) + BM25 -> RRF fusion -> cross-encoder rerank
-     -> Groq LLM answer -> citation verification -> precedent status -> UI
+PDFs / Images -> extract/clean/OCR -> chunk (180 words, 40 overlap) + metadata header
+      -> MiniLM / Gemini Cloud Embeddings (FAISS) + BM25 -> RRF fusion -> cross-encoder rerank
+      -> Groq / Gemini LLM answer -> citation & evidence verification -> precedent status -> UI / PWA
 ```
 
 ## How it works
 
 | Stage | What happens | Files |
 |---|---|---|
-| Ingest | PyMuPDF (pdfplumber fallback), cleaning, chunking, case/court/case-no/citation metadata prepended to each chunk | `rag_pipeline.py`, `metadata_extraction.py` |
-| Retrieve | Query rewrite (LLM) -> dense FAISS + BM25 fused with RRF -> cross-encoder re-rank of top 15 -> max 2 chunks per document | `rag_pipeline.py`, `generate_answer.py` |
+| Ingest | PyMuPDF (pdfplumber fallback), image OCR (JPG/PNG/WEBP), cleaning, chunking, case/court/case-no/citation metadata prepended to each chunk | `rag_pipeline.py`, `metadata_extraction.py`, `document_analyzer.py` |
+| Embed & Retrieve | MiniLM locally or **Gemini Cloud Embeddings** (`gemini-embedding-001`, 0 MB server RAM); query rewrite -> dense FAISS + BM25 fused with RRF -> cross-encoder re-rank of top 15 -> max 2 chunks per document | `rag_pipeline.py`, `generate_answer.py` |
 | Refuse | If the best dense cosine score is below `MIN_RETRIEVAL_SCORE`, no answer is written (see below) | `generate_answer.py` |
-| Answer | `openai/gpt-oss-120b` on Groq, temperature 0.2, strict "only these passages, only these case names" prompt | `generate_answer.py` |
+| Answer | `openai/gpt-oss-120b` or `qwen/qwen3.8-27b` on Groq, temperature 0.2, strict "only these passages, only these case names" prompt | `generate_answer.py`, `llm_router.py` |
 | Verify | Per cited case: exists in corpus, case number matches, passage supports the claim (Groq judge, optional Gemini cross-check; disagreement shows as "disputed"). Citation-shaped text matching no corpus case is flagged | `citation_verification.py` |
-| Intelligence | Precedent status badge, ratio/obiter extraction, court-draft templates | `legal_intelligence.py` |
+| Intelligence | Precedent status badge, ratio/obiter extraction, court-draft templates, issue mapping | `legal_intelligence.py`, `case_engine.py` |
 | Similar cases | `POST /similar`: judgments like a passage or a whole judgment, grouped by document (one row per case, ranked by best-matching passage), no LLM call | `similar_cases.py` |
 | Moot Court Debate | `POST /moot-court`: Multi-agent adversarial courtroom trial: Petitioner (Groq) vs. Respondent (Groq) vs. Presiding Bench (Gemini) with dual FAISS retrieval & ratio formulation | `moot_court.py` |
-| Citizen Legal Advisor | `POST /citizen-advice`: Everyday legal aid engine: applicable Acts/Sections, rights summary, 3-step action roadmap, clickable helplines & portals, PDF export, bilingual support (English/Hindi), audio speech playback | `legal_intelligence.py`, `frontend/src/components/CitizenAdviceView.jsx` |
+| Citizen Legal Advisor | `POST /citizen-advice`: Everyday legal aid engine: applicable Acts/Sections, rights summary, 3-step action roadmap, clickable helplines & portals, PDF export, bilingual support (English/Hindi), TTS audio speech playback, 1-click WhatsApp share | `legal_intelligence.py`, `frontend/src/components/CitizenAdviceView.jsx` |
 | BNS ↔ IPC Transition Lens | `GET /bns-lens/quick`, `POST /bns-lens/analyze`: Cross-reference mapper and comparative analyzer between pre-2024 laws (IPC, CrPC, IEA) and 2024 New Criminal Laws (BNS, BNSS, BSA) | `bns_lens.py`, `frontend/src/components/BnsLensModal.jsx` |
-| Scan Notice / Contract | `POST /analyze-document`: Upload PDF/TXT notice or contract to automatically red-flag unfair clauses, extract response deadlines, and prefill a 1-click counter-reply notice | `document_analyzer.py`, `frontend/src/components/ScanNoticeModal.jsx` |
+| Scan Notice / Contract | `POST /analyze-document`: Upload PDF/TXT or camera photo image (JPG/PNG), or load pre-built sample notices to red-flag unfair clauses, extract response deadlines, and prefill a 1-click counter-reply notice | `document_analyzer.py`, `frontend/src/components/ScanNoticeModal.jsx` |
 | Court Audio Engine | Procedural double-strike wooden gavel sound (Web Audio API) and multi-lingual Text-to-Speech legal advice playback | `frontend/src/lib/courtAudio.js` |
-| API | FastAPI: `/query`, SSE `/query/stream`, `/citizen-advice`, `/bns-lens/*`, `/analyze-document`, `/feedback`, `/documents`, `/upload`, `/similar`, `/moot-court`, `/draft/*` | `main.py`, `security.py`, `feedback_store.py` |
-| UI | React + Vite: streaming answers, citations coloured by verdict, evidence panel, moot court modal, BNS lens, notice scanner, history, sanitized markdown | `frontend/` |
+| Progressive Web App (PWA) | Service worker (`sw.js`), manifest, offline caching, and native-feeling install prompts for Mobile (iOS Safari / Android) & Desktop | `frontend/public/manifest.json`, `frontend/public/sw.js`, `frontend/src/components/PwaInstallPrompt.jsx` |
+| API | FastAPI: `/query`, SSE `/query/stream`, `/citizen-advice`, `/bns-lens/*`, `/analyze-document`, `/ping`, `/health`, `/feedback`, `/documents`, `/upload`, `/similar`, `/moot-court`, `/draft/*` | `main.py`, `security.py`, `feedback_store.py` |
+| UI | React + Vite: streaming answers, citations coloured by verdict, evidence panel, moot court modal, BNS lens, notice scanner, history, sanitized markdown, PWA install prompt | `frontend/` |
 
 ## Key Capabilities & Features
 
@@ -34,6 +35,7 @@ PDFs -> extract/clean -> chunk (180 words, 40 overlap) + metadata header
 - **Bilingual Legal Advice**: Toggle seamlessly between English and Hindi (Devanagari script) with natural Text-to-Speech audio readout (`🔊 Listen to Advice`).
 - **3-Step Action Roadmap**: Step-by-step guidance on gathering evidence, serving statutory notice, and filing official complaints, complete with an interactive checklist and progress tracker.
 - **Clickable Helplines & Portals**: Pre-populated emergency contacts (National Cyber Crime 1930, Consumer Helpline 1915, NALSA 15100, e-Daakhil) with direct `tel:` dialing and external portal links.
+- **1-Click WhatsApp Share**: Instantly share the formatted legal action roadmap, applicable sections, and emergency helpline numbers directly via WhatsApp.
 - **Official Advisory PDF Exporter**: Instant client-ready formatted PDF report for everyday citizens.
 
 ### ⚖️ BNS ↔ IPC & New Criminal Law Transition Lens
@@ -43,8 +45,16 @@ PDFs -> extract/clean -> chunk (180 words, 40 overlap) + metadata header
 
 ### 📄 "Scan My Notice / Contract" — Document Clause Analyzer
 - **Automatic Red-Flagging**: Drag-and-drop any eviction notice, employment agreement, demand notice (Section 138 NI Act), or contract to detect legally void or coercive clauses (e.g. unlawful deposit forfeiture, punitive liquidated damages, Section 27 Contract Act violations).
-- **Limitation & Response Tracker**: Highlights strict statutory response windows (e.g. 15-day notice period).
-- **1-Click Counter-Notice**: Pre-fills the legal drafting studio with tailored legal defense grounds ready to issue an official rebuttal.
+- **Pre-Loaded Sample Notices**: Instant 1-click evaluation of real-world templates including Tenant Eviction Notices, Cheque Bounce Demand Notices, and Employment Non-Compete Agreements without needing to upload files.
+- **Image & Camera Photo OCR**: Upload physical paper notices as camera photos or screenshots (JPG, PNG, WEBP) alongside PDFs and text files with automatic OCR processing.
+- **Limitation & Response Tracker**: Highlights strict statutory response windows (e.g. 15-day notice period under Section 138 NI Act).
+- **1-Click Counter-Notice & WhatsApp Export**: Pre-fills the legal drafting studio with tailored legal defense grounds ready to issue an official rebuttal, or export the findings via WhatsApp.
+
+### 📱 Progressive Web App (PWA) & Offline Capabilities
+- **Installable Anywhere**: Native app experience across Android, iOS (Safari "Add to Home Screen"), Windows, macOS, and Linux (Chrome/Edge/Brave).
+- **Custom Platform Install Prompts**: Device-aware installation guide with step-by-step modal for iOS Safari, Android, and Desktop.
+- **Offline Resilience & Caching**: Custom Service Worker (`sw.js`) caches app shell, styles, and static assets with network-first API handling and live offline toast alerts.
+- **Web App Shortcuts**: Quick-action home screen shortcuts to jump straight into Citizen Legal Advisor, Moot Court, Notice Scanner, or the BNS ↔ IPC Lens.
 
 ### 🏛️ Smart Moot Court Simulation & Audio Gavel
 - **Multi-Agent Courtroom**: Adversarial simulation pitting Petitioner Counsel against Respondent Counsel with an AI Presiding Bench delivering reasoned judicial decrees.
@@ -54,8 +64,12 @@ PDFs -> extract/clean -> chunk (180 words, 40 overlap) + metadata header
 ## Setup
 
 ```bash
+# Local development (with local MiniLM embeddings & PyTorch)
 pip install -r requirements.txt
 cp .env.example .env          # add GROQ_API_KEY (and optionally GEMINI_API_KEY)
+
+# Render Cloud / Free-tier (ultra-lean, uses Gemini cloud embeddings; 0 MB PyTorch overhead)
+pip install -r requirements-render.txt
 ```
 
 **Corpus.** Put judgment PDFs in `judgments/`. Bulk Supreme Court PDFs:
@@ -109,28 +123,34 @@ The badge on each cited case is **not** a verified citator result unless marked 
   
 ## Deployment (Render backend + Vercel frontend)
 
-`render.yaml` deploys the backend on Render's free tier (512 MB RAM) using the small
-committed index `index_store_backup_20261005_152032` (7,362 chunks). The full index
-(~52k chunks, 848 documents) needs a paid plan and a persistent disk; set `INDEX_DIR`.
-Set `GROQ_API_KEY`, `ADMIN_API_KEY` and `CORS_ORIGINS` (your exact Vercel domain) in the
-Render dashboard. Deploy the frontend to Vercel with `VITE_API_BASE` set to the Render URL.
+`render.yaml` deploys the backend on Render's free tier (512 MB RAM) with zero memory overhead:
+- **Fast Build (`requirements-render.txt`)**: Excludes PyTorch and `sentence-transformers` (~800 MB), slashing build times from 12+ min to ~2 min.
+- **Cloud Embeddings (`GeminiEmbedder`)**: When `LEXAI_RENDER_FREE_MODE=true` or `GEMINI_EMBEDDING=true`, embeddings run via Google's `gemini-embedding-001` (3072-dimensional) API, consuming 0 MB RAM and 0 CPU on the host. This prevents Exit Code 137 OOM crashes on free hosting.
+- **Uptime Keep-Alive (`/ping`)**: A public, unauthenticated `HEAD`/`GET` endpoint for UptimeRobot / Cron jobs that prevents Render's free tier from sleeping without triggering rate limits.
+- **Diagnostics (`/health`)**: Exposes active `embedding_mode` ('gemini-embedding-001' vs 'all-MiniLM-L6-v2') without loading models into memory.
+
+Set `GROQ_API_KEY`, `GEMINI_API_KEY`, `ADMIN_API_KEY`, and `CORS_ORIGINS` (your exact Vercel domain) in the Render dashboard. Deploy the frontend to Vercel with `VITE_API_BASE` set to the Render URL.
 
 ## Configuration reference
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GROQ_API_KEY` | required | LLM calls |
-| `GEMINI_API_KEY` | unset | optional second citation verifier |
-| `INDEX_DIR` / `JUDGMENTS_DIR` | `index_store` / `judgments` | index and PDF locations |
-| `MIN_RETRIEVAL_SCORE` | 0.54 | refuse below this best-chunk cosine score |
-| `WEAK_RETRIEVAL_SCORE` | 0.55 | flag weak matches below this |
-| `RERANK_MIN_SCORE`, `RERANK_GATE_BELOW` | unset, 0.62 | optional second refusal gate (see above) |
-| `ALLOW_STATUTORY_FALLBACK` | 0 | allow ungrounded general-law overview (disclaimed) |
-| `ADMIN_API_KEY` | unset | required `X-Admin-Key` for upload/delete/feedback listing; unset = those routes return 403 |
-| `RATE_LIMIT_PER_MIN` / `_PER_DAY` / `_GLOBAL_PER_MIN` | 6 / 100 / 12 | limits on routes that call Groq |
-| `TRUST_PROXY_HOPS` | 1 | trusted proxies for `X-Forwarded-For` (Render = 1) |
-| `CORS_ORIGINS` | localhost + `*.vercel.app` | when set, only these origins are allowed |
-| `MAX_UPLOAD_FILES` / `MAX_UPLOAD_MB` | 20 / 30 | upload caps |
+| `GROQ_API_KEY` | required | Primary LLM inference (answering, citations) |
+| `GEMINI_API_KEY` | unset | Secondary citation verifier, Moot Court judicial bench, and cloud embeddings |
+| `LEXAI_RENDER_FREE_MODE` | `false` | Enable Gemini cloud embeddings and compact memory profile for free hosting tiers |
+| `GEMINI_EMBEDDING` | `false` | Force `gemini-embedding-001` cloud embeddings instead of local MiniLM |
+| `GEMINI_VERIFY_MODEL` | `gemini-3.5-flash-lite` | Model ID for citation support verification |
+| `GEMINI_REASONING_MODEL` | `gemini-3.8-flash` | Model ID for Moot Court judge / case intelligence |
+| `INDEX_DIR` / `JUDGMENTS_DIR` | `index_store` / `judgments` | Index and PDF locations |
+| `MIN_RETRIEVAL_SCORE` | 0.54 | Refuse below this best-chunk cosine score |
+| `WEAK_RETRIEVAL_SCORE` | 0.55 | Flag weak matches below this |
+| `RERANK_MIN_SCORE`, `RERANK_GATE_BELOW` | unset, 0.62 | Optional second refusal gate (see above) |
+| `ALLOW_STATUTORY_FALLBACK` | 0 | Allow ungrounded general-law overview (disclaimed) |
+| `ADMIN_API_KEY` | unset | Required `X-Admin-Key` for upload/delete/feedback listing; unset = those routes return 403 |
+| `RATE_LIMIT_PER_MIN` / `_PER_DAY` / `_GLOBAL_PER_MIN` | 6 / 100 / 12 | Limits on routes that call Groq |
+| `TRUST_PROXY_HOPS` | 1 | Trusted proxies for `X-Forwarded-For` (Render = 1) |
+| `CORS_ORIGINS` | localhost + `*.vercel.app` | When set, only these origins are allowed |
+| `MAX_UPLOAD_FILES` / `MAX_UPLOAD_MB` | 20 / 30 | Upload caps |
 
 Notes: Groq limits apply per organization, not per key. Rate limits are in memory and
 assume one worker process, as in `render.yaml`.
@@ -312,3 +332,41 @@ of events, retrieval weights/source priors receive small bounded adjustments.
 Citation and evidence verification are never altered by this learned policy.
 Production Supabase deployments should run the latest `supabase/schema.sql` to
 create the `rag_feedback` table.
+
+## Progressive Web App (PWA) & Mobile Installation
+
+Smart Courtroom is a fully progressive web application built with offline capabilities and native installation support:
+
+- **Cross-Platform Install**: Installable on Android, iOS (Safari "Add to Home Screen"), Windows, macOS, and Linux (Chrome, Edge, Brave) with native windowing and no browser URL bar.
+- **Service Worker (`frontend/public/sw.js`)**: Employs a cache-first caching strategy for application assets (HTML, CSS, JS, SVG, and font bundles) and network-first strategy for live API requests.
+- **In-App Device-Aware Install Prompt**: Detects user agent and provides contextual instructions:
+  - iOS Safari: guides users through the Share Sheet -> *Add to Home Screen* step.
+  - Android & Desktop: uses the standard browser `beforeinstallprompt` event with an in-app banner and a permanent Install button in the header.
+- **App Manifest (`frontend/public/manifest.json`)**: Configured with theme color (`#0f172a`), standalone display mode, high-res maskable icons, and quick-access app shortcuts for:
+  - *Citizen Advisor*: Instant everyday legal aid and helpline directory.
+  - *Moot Court*: Multi-agent adversarial court simulation.
+  - *Scan Notice*: Document clause red-flag analyzer.
+  - *BNS Lens*: 2024 New Criminal Laws cross-reference mapper.
+- **Offline Reliability**: Live network state detection alerts users with a non-intrusive offline toast if internet connectivity drops.
+
+## GeminiEmbedder: Zero-RAM Cloud Embeddings on Render Free Tier
+
+To run reliably on Render's 512 MB RAM Free Tier without Out-Of-Memory (Exit Code 137) crashes:
+
+- **Cloud Embedding Replacement**: When `LEXAI_RENDER_FREE_MODE=true` or `GEMINI_EMBEDDING=true`, `rag_pipeline.py` uses `GeminiEmbedder` instead of local PyTorch / `sentence-transformers`.
+- **Zero Host Memory**: Embeddings are computed via Google's `gemini-embedding-001` REST API (producing 3072-dimensional vectors), reducing server memory footprint to virtually 0 MB.
+- **Drop-in Compatibility**: Implements the identical `.encode()` interface as SentenceTransformers, requiring zero code changes in FAISS indexing, Moot Court, or private case retrieval pipelines.
+- **Production Build Speed (`requirements-render.txt`)**: Render deployments use `requirements-render.txt`, omitting the ~800 MB PyTorch and torchvision wheels and shrinking build times from 12+ minutes to ~2 minutes.
+- **Uptime Keep-Alive (`/ping`)**: Free hosting spin-downs are mitigated via the `/ping` endpoint, allowing free uptime monitors (e.g., UptimeRobot) to keep the backend warm without triggering auth or rate limits.
+- **Observability**: The `/health` endpoint exposes `embedding_mode` (`"gemini-embedding-001"` vs `"all-MiniLM-L6-v2"`) to instantly verify configuration from browser or terminal.
+
+## Document Clause Scanner: Pre-Loaded Samples & Image OCR
+
+The clause analyzer (`POST /analyze-document`) allows users to audit legal notices and contracts for unfair or unlawful terms:
+
+- **Pre-Loaded Sample Notices**: Users can test the analyzer immediately without uploading personal files:
+  1. *Tenant Eviction Notice*: Checks unlawful forfeiture under Rent Control Act and statutory notice timelines under Section 106 Transfer of Property Act.
+  2. *Section 138 NI Act Cheque Bounce Notice*: Validates mandatory 15-day payment demand window and 30-day statutory limitation under the Negotiable Instruments Act.
+  3. *Employment Non-Compete Notice*: Detects post-termination non-compete restraints void under Section 27 of the Indian Contract Act and punitive liquidated damages clauses.
+- **Image & Camera Photo OCR**: Supports camera photos and image scans (JPG, PNG, WEBP) in addition to digital PDFs and TXT files.
+- **1-Click WhatsApp Export**: Red-flagged findings, response deadlines, and counter-reply drafts can be shared directly via WhatsApp with one click.
